@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from clipper import live
 from clipper.runtime import classify_job_state
+from unittest.mock import Mock
 
 
 class RuntimeStateClassificationTests(unittest.TestCase):
@@ -75,6 +76,38 @@ class LiveWorkerSlotTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     live._claim_live_slot("new-job")
                 self.assertTrue(lock.exists())
+
+
+class RecorderLifecycleTests(unittest.TestCase):
+    def test_ffmpeg_start_failure_stops_yt_dlp_and_closes_pipe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            stdout_pipe = Mock()
+            downloader = Mock()
+            downloader.stdout = stdout_pipe
+            downloader.poll.return_value = None
+            downloader.wait.return_value = 0
+            with patch.object(live.subprocess, "Popen", side_effect=[downloader, OSError("ffmpeg failed")]):
+                with self.assertRaises(OSError):
+                    live.Recorder("https://example.invalid/live", root / "buffer", root / "record.log")
+            downloader.terminate.assert_called_once()
+            downloader.wait.assert_called_once_with(timeout=5)
+            stdout_pipe.close.assert_called_once()
+
+    def test_cut_timeout_removes_concat_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            segments = root / "segments"
+            output = root / "clips" / "source.mp4"
+            segments.mkdir()
+            output.parent.mkdir()
+            (segments / "seg_0.ts").write_bytes(b"segment")
+            recorder = live.Recorder.__new__(live.Recorder)
+            recorder.dir = segments
+            with patch.object(live.subprocess, "run", side_effect=live.subprocess.TimeoutExpired("ffmpeg", 180)):
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    recorder.cut(0, 1, output)
+            self.assertFalse((output.parent / "concat.txt").exists())
 
 
 if __name__ == "__main__":

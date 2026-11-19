@@ -17,6 +17,7 @@
 - [ ] Add broader persisted runtime service registry and restart-safe queue state.
 
 ## M2 — One-source live reliability
+- [x] Harden partial recorder startup cleanup and bound each FFmpeg clip cut to 180 seconds; mocked regression tests added (execution still requires running the suite).
 - [ ] Test Twitch live, rolling buffer, chat timestamps, reconnects and cleanup.
 - [ ] Validate 720p resource profile on M1 8 GB.
 - [ ] Validate i3 / 16 GB on Windows after the Mac path is stable.

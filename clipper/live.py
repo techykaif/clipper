@@ -497,18 +497,51 @@ class Recorder:
 
     def __init__(self, url, seg_dir: Path, log: Path):
         self.dir = seg_dir
+        self.dl = None
+        self.ff = None
         seg_dir.mkdir(parents=True, exist_ok=True)
         lf = open(log, "w")
-        self.dl = subprocess.Popen(["yt-dlp", "--no-warnings", "--no-part", "-f", "b", "-S", SORT, "-o", "-", url],
-                                   stdout=subprocess.PIPE, stderr=lf, start_new_session=True)
-        self.ff = subprocess.Popen(["ffmpeg", "-v", "error", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
-                                    "-f", "segment", "-segment_time", str(SEG_S), "-reset_timestamps", "1",
-                                    "-strftime", "1", str(seg_dir / "seg_%s.ts")],
-                                   stdin=self.dl.stdout, stdout=subprocess.DEVNULL, stderr=lf, start_new_session=True)
-        self.dl.stdout.close()
+        try:
+            self.dl = subprocess.Popen(
+                ["yt-dlp", "--no-warnings", "--no-part", "-f", "b", "-S", SORT, "-o", "-", url],
+                stdout=subprocess.PIPE, stderr=lf, start_new_session=True,
+            )
+            try:
+                self.ff = subprocess.Popen(
+                    ["ffmpeg", "-v", "error", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                     "-f", "segment", "-segment_time", str(SEG_S), "-reset_timestamps", "1",
+                     "-strftime", "1", str(seg_dir / "seg_%s.ts")],
+                    stdin=self.dl.stdout, stdout=subprocess.DEVNULL, stderr=lf, start_new_session=True,
+                )
+            finally:
+                if self.dl.stdout:
+                    self.dl.stdout.close()
+        except Exception:
+            self._stop_process(self.ff)
+            self._stop_process(self.dl)
+            raise
+        finally:
+            lf.close()
+
+    @staticmethod
+    def _stop_process(proc):
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        except OSError:
+            pass
 
     def alive(self):
-        return self.ff.poll() is None and self.dl.poll() is None
+        return self.ff is not None and self.dl is not None and self.ff.poll() is None and self.dl.poll() is None
 
     def segments(self):
         """[(wall_start, path)] oldest first. The newest file may still be growing."""
@@ -540,24 +573,23 @@ class Recorder:
         lst = dest.parent / "concat.txt"
         lst.write_text("".join(f"file '{f.resolve()}'\n" for _, f in use))
         off = max(0.0, wall_a - use[0][0])
-        p = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                            "-ss", f"{off:.2f}", "-t", f"{wall_b - wall_a:.2f}",
-                            "-c:v", "libx264", "-crf", "14", "-preset", "medium", "-c:a", "aac", "-b:a", "320k",
-                            "-movflags", "+faststart", str(dest)], capture_output=True, text=True)
-        lst.unlink(missing_ok=True)
+        try:
+            p = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                                "-ss", f"{off:.2f}", "-t", f"{wall_b - wall_a:.2f}",
+                                "-c:v", "libx264", "-crf", "14", "-preset", "medium", "-c:a", "aac", "-b:a", "320k",
+                                "-movflags", "+faststart", str(dest)], capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("ffmpeg timed out while cutting the clip (180-second limit).") from exc
+        finally:
+            lst.unlink(missing_ok=True)
         if p.returncode != 0 or not dest.exists():
             raise RuntimeError("ffmpeg couldn't cut the clip: " + p.stderr.strip()[-300:])
         return dest
 
     def close(self):
-        for p in (self.dl, self.ff):
-            if p.poll() is None:
-                p.terminate()
-        for p in (self.dl, self.ff):
-            try:
-                p.wait(10)
-            except subprocess.TimeoutExpired:
-                p.kill()
+        # Stop FFmpeg first so the pipe closes before yt-dlp is asked to exit.
+        self._stop_process(self.ff)
+        self._stop_process(self.dl)
 
 
 # ---------------- the watcher ----------------
