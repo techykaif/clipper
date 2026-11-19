@@ -551,7 +551,7 @@ def refresh_job(key, sel=None):
 def switch_job(key):
     """Another stream opened: fresh view, no clip open."""
     return (status_html(key), chart_html(key), list_html(key), gr.update(choices=clip_choices(key), value=None),
-            _stop_btn(key), _del_btn(key), sidebar_html(key))
+            _stop_btn(key), _pause_btn(key), _resume_btn(key), _del_btn(key), sidebar_html(key))
 
 
 def pause_live(key):
