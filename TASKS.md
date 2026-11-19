@@ -4,7 +4,7 @@
 - [x] Confirm fork, upstream parent, default branch and repository write permission.
 - [x] Create isolated feature branch.
 - [x] Record product and hardware constraints.
-- [ ] Inspect all runtime modules, dependency manifests, installer scripts and licenses.
+- [x] Inventory runtime module responsibilities, dependency and installer entry points, and top-level licenses; detailed platform/edge-case validation remains in M1/M2.
 - [ ] Establish reproducible local setup and baseline test commands.
 - [ ] Record limitations and M1 plan.
 

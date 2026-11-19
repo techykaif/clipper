@@ -17,8 +17,9 @@ The dashboard runs on your own computer:
 - a library of your streams on the left: open one, or tick several and delete them;
 - a chart of chat activity (and the streamer's voice, if you picked it) across the stream, with each clip marked;
 - a ranked list of clips with what chat reacted to and what the streamer said; tick clips to delete several at once;
-- a Short editor: crop the face cam and the gameplay, put the face on top or at the bottom, open on the hottest moment, and add one-word subtitles in the colour you pick;
-- **Send to Claude:** one button hands the raw clip to Claude Code, which edits it into a finished Short (subtitles, cold open, zooms, memes, censoring) and refines it with you;
+- a ranked list of candidates with the signals that selected each one;
+- an optional **Antigravity quality review** after extraction: it checks a low-resolution contact sheet plus bounded transcript/chat context and returns KEEP, REJECT or REVIEW; only completed REJECT results are removed from the active library and moved to the system Trash / Recycle Bin where available;
+- a Short editor: crop the face cam and gameplay, choose the layout and subtitle style, then render manually;
 - every delete asks first, and deleted files go to the Trash.
 
 ## Install
@@ -40,7 +41,7 @@ The installer checks for git, ffmpeg and Python 3.11+ and offers to install anyt
 1. **Speech-to-text?** It downloads NVIDIA Parakeet (~490 MB), which runs offline. It's used for live streams and for the subtitles of Twitch and Kick clips (YouTube clips use YouTube's own subtitles). If you skip it, those get no subtitles and everything else works.
 2. **The Short renderer?** It installs Remotion, which needs Node.js 18+ (~400 MB).
 3. **A `clipper` terminal command?**
-4. **The `/clip` and `/short` skills for Claude Code?** Asked only if you use Claude Code.
+4. Optional local Antigravity CLI review; the CLI is configured separately and is not required to extract clips.
 
 To install without questions, add `--yes` (`... | bash -s -- --yes`; on Windows set `$env:CLIPPER_YES = "1"` first).
 
@@ -50,7 +51,7 @@ To install without questions, add `--yes` (`... | bash -s -- --yes`; on Windows 
 clipper update
 ```
 
-This pulls the latest Clipper from GitHub and refreshes whatever changed: the Python packages, the renderer's packages, and the Claude Code skills. Your streams, clips and settings aren't touched. Restart `clipper serve` afterwards if it was running. (Installed before `clipper update` existed? Run the install command once more, then use `clipper update` from then on.)
+This pulls the latest Clipper from GitHub and refreshes whatever changed: the Python packages and the renderer's packages. Your streams, clips and settings aren't touched. Restart `clipper serve` afterwards if it was running. (Installed before `clipper update` existed? Run the install command once more, then use `clipper update` from then on.)
 
 ## Use
 
@@ -63,7 +64,6 @@ clipper render <job> <clip number>              # render a Short from the termin
 clipper list                                    # every stream you've clipped
 clipper stt-download                            # add speech-to-text later
 clipper update                                  # get the latest version from GitHub
-clipper brief <job> <clip number> --open        # hand a clip to Claude Code (same as the Send to Claude button)
 ```
 
 You can also paste any of these links straight into the dashboard.
@@ -88,22 +88,17 @@ Clipper watches the stream as it happens:
 
 Times count from when Clipper started watching. It stops when you press **Stop watching**, when the stream ends, or after the number of hours set under *More options* (6 by default).
 
-### Making a Short
+### Review and make a Short
 
-**With Claude (recommended):** open a clip and press **Send to Claude**. Clipper writes a brief for the clip (`clips/<n>/brief.md`: the files, the chat at the spike, what the streamer says with timings) and opens Claude Code in a new terminal with `/short <job> <clip>`. Claude looks at the clip, then edits it in the house style:
+When automatic Antigravity review is enabled under **More options**, Clipper reviews each extracted candidate before you decide what to produce:
 
-- the face cam stacked as a 30% band on top or bottom, no border;
-- a cold open on the hottest moment, then the full clip;
-- one word at a time subtitles, no box, black shadow, in the colour that suits the footage, with the key words emphasised;
-- words that would cost ad revenue muted with a beep and shown as `F***`;
-- punch-in zooms, a shake and flash on the big hit, a warm or cold grade, meme videos, images and sounds where they land a punchline;
-- 10 hook lines to pick from.
+- **KEEP:** the candidate remains available for editing.
+- **REJECT:** the candidate is removed from the active library and its folder is moved to the system Trash / Recycle Bin where available.
+- **REVIEW:** the candidate stays available for a human decision.
 
-It renders, checks the frames, tells you what it did, and changes what you ask for. If Claude Code isn't installed, the button shows the command to paste into it.
+The **Review with Antigravity** button can also review an already extracted clip. While it runs, the button and clip selector are disabled and a progress message is shown. Review uses a low-resolution contact sheet with up to nine sampled frames plus bounded transcript/chat context; the original clip and full stream are not sent. The CLI runs in a temporary workspace with the configured sandbox and permission-bypass flags. If the CLI is unavailable or its response cannot be validated, the result is REVIEW and the clip is retained.
 
-**By hand:** go to **Make the Short**, frame the face cam and the gameplay, and pick the layout and subtitle style. Then press **Render Short**.
-
-Either way, the Short opens with the clip's loudest moment, then plays the whole clip. You get `final.mp4` (1080×1920, at the source frame rate up to 60 fps) and `final.srt`.
+A passing candidate is not automatically rendered. Open **Make the Short**, frame the face cam and gameplay, choose the layout and subtitle style, then press **Render Short**. You get `final.mp4` (1080×1920, at the source frame rate up to 60 fps) and `final.srt`.
 
 Effects live in `clips/<n>/fx.json` next to the dashboard's `edit.json`; the full list of fields is in `clipper/render.py` (`normalize_fx`). Memes for an edit come from `clipper meme search <words> [--kind videos|sounds|images]` and `clipper meme get <job> <clip> <id>`.
 
@@ -123,7 +118,7 @@ Effects live in `clips/<n>/fx.json` next to the dashboard's `edit.json`; the ful
 | Face cam guess (OpenCV) | `clipper/face.py` |
 | Render (Remotion), effects from `fx.json` | `clipper/render.py`, `remotion/src/` |
 | Memes for edits (YouTube, myinstants, memegen/Imgflip) | `clipper/memes.py` |
-| Hand-off to Claude (`brief.md`, opening Claude Code) | `clipper/handoff.py`, `skills/short/` |
+| Candidate quality review (sampled frames + bounded context) | `clipper/ai_review.py` |
 | `clipper update` | `clipper/update.py` |
 | Dashboard (Gradio) | `clipper/app.py` |
 

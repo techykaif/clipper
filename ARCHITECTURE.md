@@ -22,3 +22,12 @@ The process starts only when the user launches the application. Dashboard Start 
 
 ## Resource policy
 Default to one source and one render. Use bounded buffers, small frame samples, lazy loading and cache limits. Keep large media on disk. Cloud APIs are optional and never receive full recordings by default.
+
+## M1 runtime plan
+
+1. Add a local runtime coordinator with persisted, validated service state (idle, starting, running, paused, stopping, error).
+2. Track each worker by job key and PID with stale-process detection; do not assume a PID is alive based only on a status file.
+3. Add pause/resume semantics to the live watcher without discarding its rolling buffer or chat cursor.
+4. Expose worker health, current source, queued candidates, last error, CPU/RAM/disk usage and actions in the existing dashboard.
+5. Keep defaults at one monitored source and one render; preserve manual app launch and make shutdown idempotent.
+6. Add unit tests for state transitions and process liveness; perform live-stream and hardware tests only on the user's target machines.
