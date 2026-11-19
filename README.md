@@ -85,7 +85,7 @@ Clipper watches the stream as it happens:
 
 - It reads chat live: Twitch through its public chat server, read-only and without a login; YouTube through yt-dlp; Kick through Kick's realtime chat service with an anonymous token.
 - It records the video into a rolling 10-minute buffer.
-- One live source is allowed at a time. Starting a second is refused until the current source has stopped.
+- One live source is allowed at a time. A paused source still occupies the slot; stop it before starting another.
 - It cuts each spike into a clip once chat calms down.
 
 Times count from when Clipper started watching. It stops when you press **Stop watching**, when the stream ends, or after the number of hours set under *More options* (6 by default). For live jobs, use **Pause** and **Resume** to suspend and continue the watcher plus its media/chat subprocesses. **Stop watching** resumes a paused worker before requesting a clean stop.

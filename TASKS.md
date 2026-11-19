@@ -12,7 +12,7 @@
 - [ ] Add explicit runtime service state and lifecycle management.
 - [x] Surface live/stale worker health, candidate counts, errors, CPU, memory and disk usage in a read-only panel.
 - [x] Add per-live-job Start / Stop / Pause / Resume controls; pause suspends the verified watcher + descendant process tree, and Stop resumes before shutdown.
-- [ ] Preserve manual launch; no login auto-start.
+- [x] Preserve manual launch; no login auto-start.
 - [x] Enforce a cross-process single-live-source slot with stale lock recovery; the dashboard's render lock continues to serialize analysis/render work.
 - [ ] Add broader persisted runtime service registry and restart-safe queue state.
 
