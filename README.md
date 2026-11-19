@@ -17,6 +17,7 @@ The dashboard runs on your own computer:
 - a library of your streams on the left: open one, or tick several and delete them;
 - a chart of chat activity (and the streamer's voice, if you picked it) across the stream, with each clip marked;
 - a ranked list of clips with what chat reacted to and what the streamer said; tick clips to delete several at once;
+- a read-only **Runtime health** panel for worker state, candidate counts, errors, CPU, memory and disk;
 - a ranked list of candidates with the signals that selected each one;
 - an optional **Antigravity quality review** after extraction: it checks a low-resolution contact sheet plus bounded transcript/chat context and returns KEEP, REJECT or REVIEW; only completed REJECT results are removed from the active library and moved to the system Trash / Recycle Bin where available;
 - a Short editor: crop the face cam and gameplay, choose the layout and subtitle style, then render manually;

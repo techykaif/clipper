@@ -5,12 +5,12 @@
 - [x] Create isolated feature branch.
 - [x] Record product and hardware constraints.
 - [x] Inventory runtime module responsibilities, dependency and installer entry points, and top-level licenses; detailed platform/edge-case validation remains in M1/M2.
-- [ ] Establish reproducible local setup and baseline test commands.
-- [ ] Record limitations and M1 plan.
+- [x] Add a stdlib unittest baseline and document reproducible setup/test commands.
+- [x] Record limitations and M1 plan in AUDIT.md and ARCHITECTURE.md.
 
 ## M1 — Dashboard-controlled local runtime
 - [ ] Add explicit runtime service state and lifecycle management.
-- [ ] Surface live worker health, current source, queue, errors and resource usage.
+- [x] Surface live/stale worker health, candidate counts, errors, CPU, memory and disk usage in a read-only panel.
 - [ ] Add Start / Stop / Pause controls with graceful child-process shutdown.
 - [ ] Preserve manual launch; no login auto-start.
 - [ ] Add bounded worker concurrency and restart-safe state.

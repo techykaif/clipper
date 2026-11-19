@@ -10,7 +10,7 @@ from pathlib import Path
 import gradio as gr
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import ai_review, library, live, pipeline, render, signals, stt
+from . import ai_review, library, live, pipeline, render, runtime, signals, stt
 from .common import CONFIG, JOBS, REMOTION, TMP, config, read_json, write_json, fmt_t, font as font_of, tool
 from .platforms import detect
 
@@ -1199,6 +1199,8 @@ def build():
                     with gr.Column(scale=0, min_width=170, elem_id="np-actions"):
                         stop_btn = gr.Button("Stop watching", visible=False, elem_classes="np-danger")
                         del_stream = gr.Button("Delete stream", visible=False, size="sm", elem_classes="np-danger-soft")
+                with gr.Accordion("Runtime health", open=False, elem_id="np-health"):
+                    runtime_panel = gr.HTML(runtime.html_panel(), js_on_load=None)
                 with gr.Column(elem_id="np-chartbox", variant="panel"):
                     chart = gr.HTML(chart_html(None), js_on_load=PICK_JS)
                 with gr.Row(elem_id="np-cliprow", equal_height=True):
@@ -1283,6 +1285,7 @@ def build():
 
 
         timer = gr.Timer(2.0)
+        runtime_timer = gr.Timer(5.0)
         edit_inputs = [job, clip, t, layout, split, fx, fy, fw, gx, gy, gw, hook_on, hs, he, ts, te, subs_on, color, size, sy, upper]
         editor_fields = [t, layout, split, fx, fy, fw, gx, gy, gw, hook_on, hs, he, ts, te, subs_on, color, size, sy, upper]
         quiet = dict(show_progress="hidden")
@@ -1297,6 +1300,7 @@ def build():
         job.change(switch_job, job, head_out, **quiet)
         demo.load(first_load, job, head_out, **quiet)
         timer.tick(tick, [job, clip], head_out, **quiet)
+        runtime_timer.tick(runtime.html_panel, None, runtime_panel, **quiet)
         stop_btn.click(stop_live, job, stop_btn, **quiet)
         side.click(side_click, None, [job] + ask_out, **quiet)
 
