@@ -85,7 +85,7 @@ Clipper watches the stream as it happens:
 
 - It reads chat live: Twitch through its public chat server, read-only and without a login; YouTube through yt-dlp; Kick through Kick's realtime chat service with an anonymous token.
 - It records the video into a rolling 10-minute buffer.
-- The video recorder makes three bounded reconnect attempts after an unexpected exit; YouTube live chat reconnects with message-ID deduplication.
+- The recorder retries transient HTTP and fragment failures with exponential backoff. If it exits, Clipper restarts it and waits for a fresh segment. For YouTube, recovery continues while the live-status check is live or inconclusive; the watcher ends only after two explicit post-live checks, the configured watch limit, or a manual stop. Twitch and Kick retain bounded recorder restart attempts. YouTube live chat reconnects with message-ID deduplication.
 - One live source is allowed at a time. A paused source still occupies the slot; stop it before starting another.
 - It cuts each spike into a clip once chat calms down.
 
