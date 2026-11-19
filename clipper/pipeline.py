@@ -2,7 +2,7 @@
 import traceback
 from pathlib import Path
 
-from . import captions, chat, download, face, hotspot, render, signals, spikes, stt, subs
+from . import ai_review, captions, chat, download, face, hotspot, render, signals, spikes, stt, subs
 from .common import job_dir, read_json, set_status, write_json, fmt_t
 from .platforms import detect
 
@@ -10,16 +10,18 @@ PLATFORM_NAME = {"twitch": "Twitch", "youtube": "YouTube", "kick": "Kick"}
 
 
 def analyze(url, top_n=10, cookies_browser=None, chat_file=None, skip_download=False, basis=("chat",), keywords="",
-            min_score=85):
+            min_score=85, antigravity_review=False):
     """basis: any of "chat", "audio", "speech" (see signals.py)."""
     platform, vid = detect(url)
     jd = job_dir(platform, vid)
     basis = [b for b in ("chat", "audio", "speech") if b in (basis or ())] or ["chat"]
     write_json(jd / "job.json", {"url": url, "platform": platform, "id": vid, "cookies_browser": cookies_browser,
-                                 "basis": basis, "keywords": keywords, "min_score": min_score})
+                                 "basis": basis, "keywords": keywords, "min_score": min_score,
+                                 "antigravity_review": bool(antigravity_review)})
     (jd / "stop").unlink(missing_ok=True)
     try:
-        _run(url, platform, vid, jd, top_n, cookies_browser, chat_file, skip_download, basis, keywords, min_score)
+        _run(url, platform, vid, jd, top_n, cookies_browser, chat_file, skip_download, basis, keywords, min_score,
+             bool(antigravity_review))
     except Exception as e:
         set_status(jd, "error", 0, "", f"{e}")
         (jd / "error.log").write_text(traceback.format_exc())
@@ -38,7 +40,8 @@ def _step(jd, stage, pct, msg=""):
     set_status(jd, stage, pct, msg)
 
 
-def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_download, basis, keywords, min_score):
+def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_download, basis, keywords, min_score,
+         antigravity_review=False):
     prog = lambda pct, msg: _step(jd, "chat", pct, msg)
     msgs = []
     if (jd / "chat.json").exists() and not chat_file:
@@ -106,12 +109,26 @@ def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_d
         return
 
     n = len(res["clips"])
+
+    def review_candidate(c, progress):
+        if not antigravity_review:
+            return
+        cd = jd / "clips" / str(c["id"])
+        existing = read_json(cd / "review.json", {}) or {}
+        if existing:
+            c["review"] = existing
+        else:
+            _step(jd, "review", progress, f"Antigravity reviewing clip {c['id']}/{n}")
+            c["review"] = ai_review.review_clip(jd, c)
+        write_json(jd / "clips.json", summary)
+
     for i, c in enumerate(res["clips"]):
         base = 35 + 65 * i / n
         step = 65 / n
         cd = jd / "clips" / str(c["id"])
         cd.mkdir(parents=True, exist_ok=True)
         if (cd / "source.mp4").exists() and (read_json(cd / "clip.json") or {}).get("start") == c["start"]:
+            review_candidate(c, base + step * 0.95)
             continue
         for stale in ("edit.json", "final.mp4", "final.srt", "props.json", "fx.json", "brief.md"):
             (cd / stale).unlink(missing_ok=True)
@@ -119,7 +136,9 @@ def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_d
         src, info = download.section(url, c["start"], c["end"], cd, cookies_browser)
         prepare_clip(cd, c, src, info, lambda f, m: _step(jd, "prepare", base + step * f, f"Clip {c['id']}/{n}: {m}"),
                      captions_words=words)
-    set_status(jd, "done", 100, f"{n} clips ready")
+        review_candidate(c, base + step * 0.95)
+    rejected = sum(1 for c in res["clips"] if (c.get("review") or {}).get("verdict") == "REJECT")
+    set_status(jd, "done", 100, f"{n} clips ready; {rejected} rejected by Antigravity" if antigravity_review else f"{n} clips ready")
 
 
 def prepare_clip(cd: Path, c, src, info, progress=lambda frac, msg: None, captions_words=None):

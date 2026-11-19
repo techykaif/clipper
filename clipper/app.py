@@ -10,8 +10,8 @@ from pathlib import Path
 import gradio as gr
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import handoff, library, live, pipeline, render, signals, stt
-from .common import JOBS, REMOTION, TMP, read_json, write_json, fmt_t, font as font_of, tool
+from . import ai_review, handoff, library, live, pipeline, render, signals, stt
+from .common import CONFIG, JOBS, REMOTION, TMP, config, read_json, write_json, fmt_t, font as font_of, tool
 from .platforms import detect
 
 FACE_C, GAME_C = (63, 160, 255), (242, 162, 58)
@@ -44,6 +44,11 @@ def clip_choices(key):
 
 def clip_status(key, c):
     cd = JOBS / key / "clips" / str(c["id"])
+    review = read_json(cd / "review.json", {}) or {}
+    if review.get("status") == "reviewed" and review.get("verdict") == "REJECT":
+        return "rejected", "Rejected"
+    if review.get("status") == "needs_review" or review.get("verdict") == "REVIEW":
+        return "ready", "Needs review"
     if (cd / "final.mp4").exists():
         return "rendered", "Rendered"
     if (cd / "clip.json").exists():
@@ -335,6 +340,13 @@ def card_html(key, n, note=""):
         extra += f"<h4>Chat reactions</h4><div class='chips'>{sig}</div>"
     if words:
         extra += f"<h4>Chat kept saying</h4><div class='chips'>{words}</div>"
+    review = read_json(JOBS / key / "clips" / str(n) / "review.json", {}) or {}
+    if review.get("status") == "reviewed":
+        rcls = "np-err" if review.get("verdict") == "REJECT" else "np-ok"
+        extra += (f"<div class='np-note {rcls}'><b>Antigravity: {esc(review.get('verdict'))}"
+                  f" ({esc(review.get('score'))}/100).</b> {esc(review.get('summary'))}</div>")
+    elif review.get("status") == "needs_review":
+        extra += f"<div class='np-note'>Antigravity review needs attention: {esc(review.get('summary'))}</div>"
     return f"""<div class="np-card">
   <div class="np-card-top">
     <div class="np-score"><b>{c['score']}</b><span>/100</span></div>
@@ -438,7 +450,14 @@ def boxes(frame, e):
 
 
 # ---------------- actions ----------------
-def start_analysis(url, top_n, cookies, chat_file, hours, basis, keywords, min_score):
+def save_antigravity_review(enabled):
+    """Persist the local opt-in without overwriting other installer settings."""
+    settings = config()
+    settings["antigravity_review"] = bool(enabled)
+    write_json(CONFIG, settings)
+
+
+def start_analysis(url, top_n, cookies, chat_file, hours, basis, keywords, min_score, antigravity_review=False):
     basis = [b for b in ("chat", "audio", "speech") if b in (basis or [])]
     if not basis:
         raise gr.Error("Pick at least one way to find clips: chat spikes, loud voice or what's said.")
@@ -455,7 +474,7 @@ def start_analysis(url, top_n, cookies, chat_file, hours, basis, keywords, min_s
         raise gr.Error("Loud voice works on live streams only. For a past stream, pick chat spikes or what's said.")
     if target:
         jd = live.new_job(target, hours=float(hours or 6), basis=basis, keywords=keywords or "",
-                          min_score=int(min_score))
+                          min_score=int(min_score), antigravity_review=bool(antigravity_review))
         live.start_process(jd)
         gr.Info(f"Watching {target.get('channel') or target['id']} live. Clips appear as chat spikes.")
         return jd.name
@@ -467,7 +486,8 @@ def start_analysis(url, top_n, cookies, chat_file, hours, basis, keywords, min_s
     key = f"{platform}-{vid}"
     jd = JOBS / key
     jd.mkdir(parents=True, exist_ok=True)
-    write_json(jd / "job.json", {"url": url, "platform": platform, "id": vid})
+    write_json(jd / "job.json", {"url": url, "platform": platform, "id": vid,
+                                  "antigravity_review": bool(antigravity_review)})
     write_json(jd / "status.json", {"stage": "queued", "pct": 0, "msg": "Waiting to start", "error": ""})
     cf = None
     if chat_file:
@@ -479,7 +499,8 @@ def start_analysis(url, top_n, cookies, chat_file, hours, basis, keywords, min_s
         with LOCK:
             try:
                 pipeline.analyze(url, top_n=int(top_n), cookies_browser=cookies or None, chat_file=cf, basis=basis,
-                                 keywords=keywords or "", min_score=int(min_score))
+                                 keywords=keywords or "", min_score=int(min_score),
+                                 antigravity_review=bool(antigravity_review))
             except Exception:
                 pass                       # the error is in status.json
     threading.Thread(target=work, daemon=True).start()
@@ -687,6 +708,12 @@ def do_render(key, n):
     if not key or n is None:
         raise gr.Error("Pick a clip first.")
     jd, cd = JOBS / key, JOBS / key / "clips" / str(n)
+    review = read_json(cd / "review.json", {}) or {}
+    if review.get("status") == "reviewed" and review.get("verdict") == "REJECT":
+        yield ('<div class="np-note np-err"><b>Not promoted.</b> Antigravity rejected this candidate. '
+               'The original clip is preserved in the library; review it again or remove its review record '
+               'to override this decision.</div>'), gr.update(), gr.update()
+        return
     state = {"pct": 0, "msg": "Waiting for the renderer", "err": None, "done": False}
 
     def work():
@@ -727,6 +754,31 @@ def open_studio(key, n):
                                       stderr=subprocess.STDOUT)
     return ('<div class="np-note">Remotion Studio is starting. It opens at '
             '<a href="http://localhost:3000/ClipShort" target="_blank">localhost:3000/ClipShort</a> in a few seconds.</div>')
+
+
+# ---------------- Antigravity candidate review ----------------
+def review_button_state(key, n):
+    if not key or n is None:
+        return gr.update(visible=False)
+    return gr.update(visible=(JOBS / key / "clips" / str(n) / "source.mp4").is_file())
+
+
+def review_with_antigravity(key, n):
+    if not key or n is None:
+        raise gr.Error("Open an extracted clip first.")
+    candidate = next((x for x in clips_of(key) if x["id"] == int(n)), None)
+    if not candidate:
+        raise gr.Error("That clip is no longer in the candidate list.")
+    result = ai_review.review_clip(JOBS / key, candidate)
+    verdict = result.get("verdict", "REVIEW")
+    score = result.get("score")
+    score_text = f" ({score}/100)" if score is not None else ""
+    tone = "np-err" if verdict == "REJECT" else "np-ok" if verdict == "KEEP" else ""
+    msg = (f"<div class='np-note {tone}'><b>Antigravity: {esc(verdict)}{score_text}.</b> "
+           f"{esc(result.get('summary') or 'No summary returned.')}</div>")
+    if result.get("status") == "needs_review":
+        msg += "<div class='np-note'>The review did not complete; the clip was not rejected.</div>"
+    return msg, card_html(key, int(n)), list_html(key, int(n))
 
 
 # ---------------- hand-off to Claude ----------------
@@ -1149,6 +1201,13 @@ def build():
                                           label="Sign in with browser cookies (members-only or age-gated)")
                     chat_file = gr.File(label="Chat file (exported Twitch or Kick chat, JSON or CSV)",
                                         file_types=[".json", ".csv"], height=100)
+                    antigravity_review = gr.Checkbox(
+                        label="Automatically review new clips with Antigravity",
+                        value=bool(config().get("antigravity_review", True)),
+                        info="Uses a 9-frame low-resolution contact sheet plus short transcript/chat context. "
+                             "No full clip or stream is sent. Runs headlessly with --sandbox and "
+                             "--dangerously-skip-permissions (all tool approvals are bypassed).",
+                    )
                 side = gr.HTML(sidebar_html(first), js_on_load=PICK_JS)
 
             # ---------- main ----------
@@ -1172,7 +1231,9 @@ def build():
                                 clip_list = gr.HTML(list_html(None), js_on_load=PICK_JS)
                             with gr.Column(scale=5, min_width=360):
                                 card = gr.HTML(card_html(None, None), js_on_load=None)
-                                send_btn = gr.Button("Send to Claude", variant="primary", visible=False, elem_id="np-send")
+                                review_btn = gr.Button("Review with Antigravity", variant="primary", visible=False)
+                                review_msg = gr.HTML(js_on_load=None)
+                                send_btn = gr.Button("Send to Claude for editing", variant="secondary", visible=False, elem_id="np-send")
                                 send_msg = gr.HTML(js_on_load=COPY_JS)
                                 src_vid = gr.Video(label="Clip as downloaded", show_label=False, interactive=False,
                                                    elem_classes="np-media", visible=False)
@@ -1250,7 +1311,8 @@ def build():
 
         # streams
         basis.change(lambda b: gr.update(visible="speech" in (b or [])), basis, keywords, **quiet)
-        go.click(start_analysis, [url, top_n, cookies, chat_file, hours, basis, keywords, min_score], job).then(
+        antigravity_review.change(save_antigravity_review, antigravity_review, None, **quiet)
+        go.click(start_analysis, [url, top_n, cookies, chat_file, hours, basis, keywords, min_score, antigravity_review], job).then(
             lambda k: refresh_job(k), job, head_out, **quiet)
         job.change(switch_job, job, head_out, **quiet)
         demo.load(first_load, job, head_out, **quiet)
@@ -1270,6 +1332,8 @@ def build():
         chart.click(list_click, job, [clip] + ask_out, **quiet)
         clip.change(highlight, [job, clip], [chart, clip_list], **quiet)
         clip.change(lambda n: gr.update(visible=n is not None), clip, del_clip, **quiet)
+        clip.change(review_button_state, [job, clip], review_btn, **quiet)
+        review_btn.click(review_with_antigravity, [job, clip], [review_msg, card, clip_list], **quiet)
         clip.change(load_clip, [job, clip], [card, src_vid] + editor_fields + [final_vid, files], **quiet).then(
             apply_edit, edit_inputs, [crop_view, pv], **quiet)
         for comp in editor_fields:      # user edits only (not the values load_clip fills in)

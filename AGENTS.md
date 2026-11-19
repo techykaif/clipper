@@ -15,9 +15,10 @@ Evolve this fork of Clipper into a locally launched, dashboard-controlled autono
 - One-click start/stop from the dashboard; clean shutdown of child processes.
 - Target Apple Silicon Mac with 8 GB RAM and Windows x64 machine with 16 GB RAM.
 - Keep defaults conservative: one live stream and one render at a time; disk-based rolling buffer; bounded caches; cleanup old temporary segments.
-- No local generative LLM, no Ollama, and no dependency on Antigravity/Claude at runtime.
-- Optional cloud AI must be disabled by default, opt-in, provider/model configurable, rate-limited, quota-aware, and have a deterministic fallback.
-- Do not silently upload full streams. Any external AI request must be candidate-triggered and disclose exactly what metadata/frames/audio are sent.
+- No local generative LLM or Ollama, and no dependency on Antigravity/Claude for the core runtime.
+- Optional Antigravity candidate review is separately user-configurable. It runs only after extraction and must fail to REVIEW (never reject) when unavailable, uncertain or errored.
+- The Antigravity subprocess must use --sandbox --dangerously-skip-permissions and run from a disposable temporary workspace containing only a sampled low-resolution contact sheet and bounded context text. Never give it the project tree, source clip, full stream, credentials or secrets.
+- Do not silently upload full streams or source clips. Disclose the exact candidate-only payload: sampled frames and bounded transcript/chat metadata.
 - No campaign auto-publishing without user-configured accounts, campaign rules and explicit authorization for the source content/platform. Respect platform terms, creator rights and campaign requirements.
 
 ## Engineering

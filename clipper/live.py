@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import signals, spikes
+from . import ai_review, signals, spikes
 from .common import JOBS, fmt_t, read_json, set_status, video_info, write_json
 
 BUFFER_S = 600          # seconds of video kept on disk
@@ -86,14 +86,15 @@ def probe(url):
     return None
 
 
-def new_job(target, hours=6.0, top_n=30, basis=("chat",), keywords="", min_score=85):
+def new_job(target, hours=6.0, top_n=30, basis=("chat",), keywords="", min_score=85,
+             antigravity_review=False):
     key = f"{target['platform']}-live-{re.sub(r'[^A-Za-z0-9_-]', '', target['id'])}-{time.strftime('%Y%m%d-%H%M%S')}"
     jd = JOBS / key
     jd.mkdir(parents=True)
     basis = [b for b in ("chat", "audio", "speech") if b in (basis or ())] or ["chat"]
     write_json(jd / "job.json", {"url": target["url"], "platform": target["platform"], "id": target["id"], "live": True,
                                  "hours": hours, "top_n": top_n, "basis": basis, "keywords": keywords,
-                                 "min_score": min_score})
+                                 "min_score": min_score, "antigravity_review": bool(antigravity_review)})
     write_json(jd / "meta.json", {"title": target.get("title"), "channel": target.get("channel"), "duration": 0})
     set_status(jd, "live", 0, "Starting")
     return jd
@@ -388,6 +389,9 @@ def run(key):
                     info = video_info(src)
                     c["end"] = round(c["start"] + info["duration"], 2)
                     prepare_clip(cd, c, src, info)
+                    if job.get("antigravity_review"):
+                        set_status(jd, "review", 0, f"Antigravity reviewing clip {c['id']}")
+                        c["review"] = ai_review.review_clip(jd, c)
                     clips.append(c)
                 except Exception as e:
                     (cd / "error.log").write_text(str(e))
