@@ -18,7 +18,7 @@
 
 ## M2 — One-source live reliability
 - [x] Harden partial recorder startup cleanup and bound each FFmpeg clip cut to 180 seconds; mocked regression tests added (execution still requires running the suite).
-- [x] Add bounded video-recorder reconnects and YouTube live-chat reconnect/deduplication; mocked regression tests added.
+- [x] Add yt-dlp HTTP/fragment retry backoff, fresh-segment recorder recovery and YouTube live-status confirmation before ending after capture loss; add YouTube live-chat reconnect/deduplication. Mocked regression tests added; real platform validation remains open.
 - [x] Bound yt-dlp socket/fragment retries and surface reconnect status in the dashboard.
 - [ ] Test Twitch live, rolling buffer, chat timestamps, reconnects and cleanup on a real authorized stream.
 - [ ] Validate 720p resource profile on M1 8 GB.
