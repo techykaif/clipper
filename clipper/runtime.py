@@ -10,12 +10,14 @@ from .common import JOBS, ROOT, read_json
 STALE_AFTER_S = 180
 
 
-def classify_job_state(stage, is_live, process_alive=False, ended=False, age_s=None):
+def classify_job_state(stage, is_live, process_alive=False, ended=False, age_s=None, paused=False):
     """Stale means no recent proof of life; it is never an instruction to kill a worker."""
     if stage == "error":
         return "ERROR"
     if stage == "done" or ended:
         return "STOPPED"
+    if paused and process_alive:
+        return "PAUSED"
     if is_live:
         return "RUNNING" if process_alive else "STALE"
     if not stage:
@@ -33,10 +35,12 @@ def _job_snapshot(jd):
     age = max(0.0, time.time() - status_path.stat().st_mtime) if status_path.exists() else None
     is_live = bool(job.get("live"))
     alive = False
+    is_paused = False
     if is_live:
         from . import live
         alive = live.running(jd)
-    state = classify_job_state(status.get("stage"), is_live, alive, bool(live_info.get("ended")), age)
+        is_paused = live.paused(jd) if alive else False
+    state = classify_job_state(status.get("stage"), is_live, alive, bool(live_info.get("ended")), age, is_paused)
     clips = (read_json(jd / "clips.json", {}) or {}).get("clips", []) or []
     meta = read_json(jd / "meta.json", {}) or {}
     title = ((read_json(jd / "clips.json", {}) or {}).get("title")
@@ -62,7 +66,7 @@ def snapshot():
                              "stage": "", "message": "Could not read job status.", "error": "",
                              "pid": None, "clip_count": 0, "is_live": False})
 
-    active = [j for j in jobs if j["state"] in ("RUNNING", "QUEUED")]
+    active = [j for j in jobs if j["state"] in ("RUNNING", "QUEUED", "PAUSED")]
     stale = [j for j in jobs if j["state"] in ("STALE", "UNKNOWN")]
     errors = [j for j in jobs if j["state"] == "ERROR" or j["error"]]
     cpu_text, memory_text = "Unavailable", "Unavailable"
@@ -107,7 +111,8 @@ def snapshot():
 def html_panel():
     data = snapshot()
     active, stale, errors = data["active"], data["stale"], data["errors"]
-    health = "Attention needed" if stale or errors else ("Running" if active else "Idle")
+    is_paused = any(j["state"] == "PAUSED" for j in active)
+    health = "Attention needed" if stale or errors else ("Paused" if is_paused and len(active) == 1 else ("Running" if active else "Idle"))
     tone = "np-err" if stale or errors else ("np-ok" if active else "")
     cells = [
         ("Health", health),

@@ -77,13 +77,15 @@ def status_html(key):
     stage = (st.get("stage") or "").lower()
     if job.get("live"):
         on = live.running(JOBS / key)
+        is_paused = live.paused(JOBS / key)
         ok = [c for c in s.get("clips", [])]
-        stats = [("Watched for" if not on else "Watching for", fmt_t(s.get("duration") or 0)),
+        stats = [("Paused at" if is_paused else ("Watched for" if not on else "Watching for"), fmt_t(s.get("duration") or 0)),
                  ("Chat messages", f"{s.get('messages', 0):,}"),
                  ("Average chat", f"{float(s.get('avg_per_min') or 0):.0f}<small> / min</small>"),
                  ("Clips so far" if on else "Clips", str(len(ok)))]
         dl = "".join(f"<div><dt>{a}</dt><dd>{b}</dd></div>" for a, b in stats)
-        badge = '<span class="np-live">Live</span>' if on else '<span class="np-live off">Ended</span>'
+        badge = ('<span class="np-live off">Paused</span>' if is_paused else
+                 '<span class="np-live">Live</span>' if on else '<span class="np-live off">Ended</span>')
         head = head.replace("<h2>", f"<h2>{badge}", 1)
         return (f'<div class="np-status">{head}<dl class="np-stats">{dl}</dl>'
                 f'<p class="np-livemsg">{esc(st.get("msg") or "")}</p></div>')
@@ -522,6 +524,20 @@ def _stop_btn(key):
     return gr.update(visible=_running_past(key), value="Stop")
 
 
+def _pause_btn(key):
+    visible = bool(key and (JOBS / key).exists() and
+                   (read_json(JOBS / key / "job.json", {}) or {}).get("live") and
+                   live.running(JOBS / key) and not live.paused(JOBS / key))
+    return gr.update(visible=visible)
+
+
+def _resume_btn(key):
+    visible = bool(key and (JOBS / key).exists() and
+                   (read_json(JOBS / key / "job.json", {}) or {}).get("live") and
+                   live.paused(JOBS / key))
+    return gr.update(visible=visible)
+
+
 def _del_btn(key):
     return gr.update(visible=bool(key) and (JOBS / key).exists())
 
@@ -529,7 +545,7 @@ def _del_btn(key):
 def refresh_job(key, sel=None):
     """Everything about the open stream (timer + after changes). Keeps the open clip."""
     return (status_html(key), chart_html(key, sel), list_html(key, sel), gr.update(choices=clip_choices(key)),
-            _stop_btn(key), _del_btn(key), sidebar_html(key))
+            _stop_btn(key), _pause_btn(key), _resume_btn(key), _del_btn(key), sidebar_html(key))
 
 
 def switch_job(key):
@@ -538,14 +554,37 @@ def switch_job(key):
             _stop_btn(key), _del_btn(key), sidebar_html(key))
 
 
+def pause_live(key):
+    if not key or not (JOBS / key).exists():
+        raise gr.Error("Select an active live stream first.")
+    try:
+        live.pause(JOBS / key)
+    except Exception as exc:
+        raise gr.Error(str(exc))
+    return status_html(key), gr.update(visible=False), gr.update(visible=True)
+
+
+def resume_live(key):
+    if not key or not (JOBS / key).exists():
+        raise gr.Error("Select a paused live stream first.")
+    try:
+        live.resume(JOBS / key)
+    except Exception as exc:
+        raise gr.Error(str(exc))
+    return status_html(key), gr.update(visible=True), gr.update(visible=False)
+
+
 def stop_live(key):
     if key and live.running(JOBS / key):
-        live.stop(JOBS / key)
+        try:
+            live.stop(JOBS / key)
+        except Exception as exc:
+            raise gr.Error(f"Could not stop the live worker cleanly: {exc}")
         gr.Info("Stopping. Clips already cut stay.")
     elif key:
         (JOBS / key / "stop").touch()        # pipeline._step picks this up at its next step
         gr.Info("Stopping after the current step.")
-    return gr.update(visible=False)
+    return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), status_html(key)
 
 
 _SETTLED = {}
@@ -557,7 +596,7 @@ def tick(key, sel):
     sig = ((st or {}).get("stage"), (st or {}).get("pct"), (st or {}).get("msg"),
            (JOBS / key / "clips.json").stat().st_mtime if key and (JOBS / key / "clips.json").exists() else 0)
     if not key or _SETTLED.get(key) == sig:
-        return (gr.skip(),) * 7
+        return (gr.skip(),) * 9
     if sig[0] in ("done", "error"):
         _SETTLED[key] = sig
     return refresh_job(key, sel)
@@ -1198,6 +1237,8 @@ def build():
                     status = gr.HTML(status_html(None), js_on_load=None, scale=1)
                     with gr.Column(scale=0, min_width=170, elem_id="np-actions"):
                         stop_btn = gr.Button("Stop watching", visible=False, elem_classes="np-danger")
+                        pause_btn = gr.Button("Pause", visible=False, size="sm")
+                        resume_btn = gr.Button("Resume", visible=False, size="sm")
                         del_stream = gr.Button("Delete stream", visible=False, size="sm", elem_classes="np-danger-soft")
                 with gr.Accordion("Runtime health", open=False, elem_id="np-health"):
                     runtime_panel = gr.HTML(runtime.html_panel(), js_on_load=None)
@@ -1289,7 +1330,7 @@ def build():
         edit_inputs = [job, clip, t, layout, split, fx, fy, fw, gx, gy, gw, hook_on, hs, he, ts, te, subs_on, color, size, sy, upper]
         editor_fields = [t, layout, split, fx, fy, fw, gx, gy, gw, hook_on, hs, he, ts, te, subs_on, color, size, sy, upper]
         quiet = dict(show_progress="hidden")
-        head_out = [status, chart, clip_list, clip, stop_btn, del_stream, side]
+        head_out = [status, chart, clip_list, clip, stop_btn, pause_btn, resume_btn, del_stream, side]
         ask_out = [pend_kind, pend_ids, modal, modal_msg]
 
         # streams
@@ -1301,7 +1342,9 @@ def build():
         demo.load(first_load, job, head_out, **quiet)
         timer.tick(tick, [job, clip], head_out, **quiet)
         runtime_timer.tick(runtime.html_panel, None, runtime_panel, **quiet)
-        stop_btn.click(stop_live, job, stop_btn, **quiet)
+        stop_btn.click(stop_live, job, [stop_btn, pause_btn, resume_btn, status], **quiet)
+        pause_btn.click(pause_live, job, [status, pause_btn, resume_btn], **quiet)
+        resume_btn.click(resume_live, job, [status, pause_btn, resume_btn], **quiet)
         side.click(side_click, None, [job] + ask_out, **quiet)
 
         # deleting (one confirm dialog for everything)

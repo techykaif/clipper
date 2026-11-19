@@ -11,7 +11,7 @@
 ## M1 — Dashboard-controlled local runtime
 - [ ] Add explicit runtime service state and lifecycle management.
 - [x] Surface live/stale worker health, candidate counts, errors, CPU, memory and disk usage in a read-only panel.
-- [ ] Add Start / Stop / Pause controls with graceful child-process shutdown.
+- [x] Add per-live-job Start / Stop / Pause / Resume controls; pause suspends the verified watcher + descendant process tree, and Stop resumes before shutdown.
 - [ ] Preserve manual launch; no login auto-start.
 - [ ] Add bounded worker concurrency and restart-safe state.
 

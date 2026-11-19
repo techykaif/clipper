@@ -13,6 +13,9 @@ class RuntimeStateClassificationTests(unittest.TestCase):
     def test_ended_live_job_is_stopped(self):
         self.assertEqual(classify_job_state("live", True, process_alive=False, ended=True), "STOPPED")
 
+    def test_paused_live_job_is_paused(self):
+        self.assertEqual(classify_job_state("live", True, process_alive=True, paused=True), "PAUSED")
+
     def test_recent_past_job_is_running(self):
         self.assertEqual(classify_job_state("download", False, age_s=20), "RUNNING")
 

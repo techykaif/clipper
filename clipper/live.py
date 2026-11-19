@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import threading
+import psutil
 import time
 from pathlib import Path
 
@@ -109,7 +110,12 @@ def start_process(jd: Path):
               else {"start_new_session": True})
     p = subprocess.Popen([sys.executable, "-m", "clipper", "live-run", jd.name], cwd=Path(__file__).resolve().parents[1],
                          stdout=log, stderr=subprocess.STDOUT, **detach)
-    write_json(jd / "live.json", {"pid": p.pid, "started": time.time()})
+    try:
+        created = psutil.Process(p.pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        created = None
+    write_json(jd / "live.json", {"pid": p.pid, "started": time.time(),
+                                  "create_time": created, "paused": False})
     return p.pid
 
 
@@ -118,7 +124,96 @@ def running(jd: Path) -> bool:
     pid = info.get("pid")
     if not pid or info.get("ended"):
         return False
-    return _alive(pid)
+    try:
+        proc = psutil.Process(int(pid))
+        if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        expected = info.get("create_time")
+        if expected is not None and abs(proc.create_time() - float(expected)) > 2.0:
+            return False
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+        return _alive(int(pid))
+
+
+def paused(jd: Path) -> bool:
+    info = read_json(jd / "live.json", {}) or {}
+    return bool(info.get("paused")) and running(jd)
+
+
+def _verified_worker(jd: Path):
+    info = read_json(jd / "live.json", {}) or {}
+    pid = info.get("pid")
+    if not pid or not running(jd):
+        raise RuntimeError("The live worker is not running.")
+    proc = psutil.Process(int(pid))
+    expected = info.get("create_time")
+    if expected is not None and abs(proc.create_time() - float(expected)) > 2.0:
+        raise RuntimeError("The saved worker PID no longer matches this Clipper job.")
+    command = proc.cmdline()
+    if "live-run" not in command or jd.name not in command:
+        raise RuntimeError("Refusing to control a process that does not match this Clipper job.")
+    return proc, info
+
+
+def pause(jd: Path):
+    """Suspend the verified watcher and its media/chat process tree."""
+    if paused(jd):
+        return False
+    root, info = _verified_worker(jd)
+    # Persist intent before suspending any process: a dashboard crash mid-pause can still be resumed.
+    write_json(jd / "live.json", {**info, "paused": True, "pause_requested_at": time.time()})
+    children = root.children(recursive=True)
+    suspended = []
+    try:
+        for child in reversed(children):
+            try:
+                child.suspend()
+                suspended.append(child)
+            except psutil.NoSuchProcess:
+                continue
+        root.suspend()
+        suspended.append(root)
+    except Exception as exc:
+        rollback_errors = []
+        for proc in reversed(suspended):
+            try:
+                proc.resume()
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.AccessDenied as rollback_exc:
+                rollback_errors.append(str(rollback_exc))
+        if not rollback_errors:
+            write_json(jd / "live.json", {**info, "paused": False})
+        raise RuntimeError(
+            f"Could not safely pause the live worker tree: {exc}"
+            + (f"; rollback was incomplete: {rollback_errors[:2]}" if rollback_errors else "")
+        ) from exc
+    write_json(jd / "live.json", {**info, "paused": True, "paused_at": time.time()})
+    return True
+
+
+def resume(jd: Path):
+    """Resume media/chat children before the watcher."""
+    if not paused(jd):
+        return False
+    root, info = _verified_worker(jd)
+    errors = []
+    for child in reversed(root.children(recursive=True)):
+        try:
+            child.resume()
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied as exc:
+            errors.append(str(exc))
+    try:
+        root.resume()
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+        errors.append(str(exc))
+    if errors:
+        raise RuntimeError("Could not resume every process in the live worker tree: " + "; ".join(errors[:3]))
+    write_json(jd / "live.json", {**info, "paused": False, "resumed_at": time.time()})
+    return True
 
 
 def _alive(pid: int) -> bool:
@@ -140,6 +235,9 @@ def _alive(pid: int) -> bool:
 
 
 def stop(jd: Path):
+    # A suspended watcher cannot process its stop file or SIGTERM.
+    if paused(jd):
+        resume(jd)
     (jd / "stop").touch()
     info = read_json(jd / "live.json", {}) or {}
     # Windows has no SIGTERM (os.kill would hard-kill and orphan yt-dlp/ffmpeg): the watcher sees the stop file

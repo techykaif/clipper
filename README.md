@@ -87,7 +87,7 @@ Clipper watches the stream as it happens:
 - It records the video into a rolling 10-minute buffer.
 - It cuts each spike into a clip once chat calms down.
 
-Times count from when Clipper started watching. It stops when you press **Stop watching**, when the stream ends, or after the number of hours set under *More options* (6 by default).
+Times count from when Clipper started watching. It stops when you press **Stop watching**, when the stream ends, or after the number of hours set under *More options* (6 by default). For live jobs, use **Pause** and **Resume** to suspend and continue the watcher plus its media/chat subprocesses. **Stop watching** resumes a paused worker before requesting a clean stop.
 
 ### Review and make a Short
 
