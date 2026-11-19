@@ -4,11 +4,10 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from clipper import live
 from clipper.runtime import classify_job_state
-from unittest.mock import Mock
 
 
 class RuntimeStateClassificationTests(unittest.TestCase):
@@ -78,7 +77,111 @@ class LiveWorkerSlotTests(unittest.TestCase):
                 self.assertTrue(lock.exists())
 
 
+class YouTubeLiveChatReconnectTests(unittest.TestCase):
+    def test_chat_reader_restarts_after_an_unexpected_process_exit(self):
+        class StopEvent:
+            def __init__(self):
+                self.wait_count = 0
+            def is_set(self):
+                return self.wait_count >= 2
+            def wait(self, _seconds):
+                self.wait_count += 1
+                return self.is_set()
+
+        class FakeProcess:
+            def __init__(self, exits):
+                self.exits = exits
+                self.terminated = False
+            def poll(self):
+                if self.exits:
+                    return 1
+                return 0 if self.terminated else None
+            def terminate(self):
+                self.terminated = True
+            def wait(self, timeout=None):
+                return 0
+            def kill(self):
+                self.terminated = True
+
+        with tempfile.TemporaryDirectory() as folder:
+            processes = [FakeProcess(True), FakeProcess(False)]
+            stop_evt = StopEvent()
+            chat = live.Chat(time.time())
+            with patch.object(live.subprocess, "Popen", side_effect=processes) as popen:
+                live.youtube_chat("https://youtube.com/watch?v=test", Path(folder), chat, stop_evt)
+            self.assertEqual(popen.call_count, 2)
+            self.assertTrue(chat.alive)
+            self.assertTrue(processes[1].terminated)
+
+
 class RecorderLifecycleTests(unittest.TestCase):
+    def test_recorder_stall_detection_uses_latest_segment_write(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            seg_dir = root / "buffer"
+            seg_dir.mkdir()
+            recorder = live.Recorder.__new__(live.Recorder)
+            recorder.dir = seg_dir
+            recorder.started = 100.0
+            fresh = seg_dir / "seg_101.ts"
+            fresh.write_bytes(b"frame")
+            now = time.time()
+            self.assertFalse(recorder.stalled(now=now))
+            os.utime(fresh, (now - live.RECORDER_STALL_S - 1, now - live.RECORDER_STALL_S - 1))
+            self.assertTrue(recorder.stalled(now=now))
+
+    def test_recorder_reconnect_stops_after_bounded_attempts(self):
+        class StopEvent:
+            def __init__(self):
+                self.delays = []
+            def wait(self, delay):
+                self.delays.append(delay)
+                return False
+
+        with tempfile.TemporaryDirectory() as folder:
+            stop_evt = StopEvent()
+            job_dir = Path(folder)
+            job = {"url": "https://example.invalid/live"}
+            with patch.object(live, "Recorder", side_effect=RuntimeError("offline")) as recorder:
+                result, message = live._reconnect_recorder(job, job_dir, stop_evt)
+            self.assertIsNone(result)
+            self.assertIn("could not reconnect", message)
+            self.assertEqual(stop_evt.delays, list(live.RECONNECT_DELAYS))
+            self.assertEqual(recorder.call_count, len(live.RECONNECT_DELAYS))
+
+    def test_recorder_reconnect_requires_a_new_nonempty_segment(self):
+        class StopEvent:
+            def wait(self, _delay):
+                return False
+
+        class FakeRecorder:
+            def __init__(self, segment):
+                self.segment = segment
+            def alive(self):
+                return True
+            def segments(self):
+                return [(100, self.segment)]
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as folder:
+            job_dir = Path(folder)
+            segment_dir = job_dir / "buffer"
+            segment_dir.mkdir()
+            new_segment = segment_dir / "seg_101.ts"
+            recorder = FakeRecorder(new_segment)
+
+            def start_recorder(*_args, **_kwargs):
+                new_segment.write_bytes(b"video bytes")
+                return recorder
+
+            with patch.object(live, "Recorder", side_effect=start_recorder):
+                result, message = live._reconnect_recorder(
+                    {"url": "https://example.invalid/live"}, job_dir, StopEvent()
+                )
+            self.assertIs(result, recorder)
+            self.assertIn("reconnected", message)
+
     def test_ffmpeg_start_failure_stops_yt_dlp_and_closes_pipe(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -17,6 +17,7 @@ import subprocess
 import threading
 import psutil
 import time
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -29,6 +30,11 @@ CHECK_S = 10            # how often spikes are looked for
 SETTLE_S = 12           # wait this long after a clip's end so the recorder has written it
 WARMUP_S = float(os.environ.get("CLIPPER_LIVE_WARMUP", 120))   # no clips before this much chat history
 SORT = "res,fps,vbr"
+RECONNECT_DELAYS = (2, 4, 8)
+RECORDER_READY_S = 10.0
+RECORDER_STALL_S = 30.0
+YT_CHAT_RECONNECT_S = 3
+YT_CHAT_SEEN_LIMIT = 50000
 
 TWITCH_CH = re.compile(r"(?:^|//)(?:www\.|m\.)?twitch\.tv/([A-Za-z0-9_]{3,25})/?(?:\?.*)?$")
 KICK_CH = re.compile(r"(?:^|//)(?:www\.)?kick\.com/([A-Za-z0-9_-]+)/?(?:\?.*)?$")
@@ -450,44 +456,76 @@ def twitch_chat(channel, chat: Chat, stop_evt):
 
 
 def youtube_chat(url, jd: Path, chat: Chat, stop_evt):
-    """yt-dlp's YouTube live chat reader writes one JSON line per chat action; follow the file as it grows."""
+    """Follow YouTube live chat and reconnect if yt-dlp's chat reader exits."""
     out = jd / "yt_live"
-    for f in jd.glob("yt_live*"):
-        f.unlink()
-    proc = subprocess.Popen(["yt-dlp", "--no-warnings", "--skip-download", "--write-subs", "--sub-langs", "live_chat",
-                             "-o", str(out), url], stdout=subprocess.DEVNULL, stderr=open(jd / "chat.log", "w"),
-                            start_new_session=True)
-    pos, buf = 0, ""
-    try:
-        while not stop_evt.is_set():
-            files = [f for f in jd.glob("yt_live.live_chat.json*") if "Frag" not in f.name]
-            if files:
-                with open(files[0], encoding="utf-8", errors="replace") as fh:
-                    fh.seek(pos)
-                    buf += fh.read()
-                    pos = fh.tell()
-                *lines, buf = buf.split("\n")
-                for line in lines:
-                    try:
-                        d = json.loads(line)
-                    except ValueError:
-                        continue
-                    for a in (d.get("replayChatItemAction") or {}).get("actions", []):
-                        item = (a.get("addChatItemAction") or {}).get("item") or {}
-                        m = item.get("liveChatTextMessageRenderer") or item.get("liveChatPaidMessageRenderer")
-                        if not m or not m.get("timestampUsec"):
+    seen_ids, seen_order = set(), deque()
+    while not stop_evt.is_set():
+        for stale in jd.glob("yt_live*"):
+            stale.unlink(missing_ok=True)
+        pos, buf, proc = 0, "", None
+        try:
+            with open(jd / "chat.log", "a", encoding="utf-8") as errlog:
+                proc = subprocess.Popen(
+                    ["yt-dlp", "--no-warnings", "--skip-download", "--write-subs", "--sub-langs", "live_chat",
+                     "-o", str(out), url],
+                    stdout=subprocess.DEVNULL, stderr=errlog, start_new_session=True,
+                )
+            chat.error = ""
+            while not stop_evt.is_set():
+                files = [f for f in jd.glob("yt_live.live_chat.json*") if "Frag" not in f.name]
+                if files:
+                    with open(files[0], encoding="utf-8", errors="replace") as fh:
+                        fh.seek(pos)
+                        buf += fh.read()
+                        pos = fh.tell()
+                    *lines, buf = buf.split("\n")
+                    for line in lines:
+                        try:
+                            data = json.loads(line)
+                        except ValueError:
                             continue
-                        text = "".join(r.get("text") or ((r.get("emoji") or {}).get("shortcuts") or [""])[0]
-                                       for r in (m.get("message") or {}).get("runs", []))
-                        chat.add(int(m["timestampUsec"]) / 1e6, (m.get("authorName") or {}).get("simpleText", ""), text)
-            if proc.poll() is not None:
-                chat.alive = False
-                chat.error = "YouTube live chat ended"
-                break
-            stop_evt.wait(2)
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
+                        for action in (data.get("replayChatItemAction") or {}).get("actions", []):
+                            item = (action.get("addChatItemAction") or {}).get("item") or {}
+                            message = item.get("liveChatTextMessageRenderer") or item.get("liveChatPaidMessageRenderer")
+                            if not message or not message.get("timestampUsec"):
+                                continue
+                            message_id = message.get("id")
+                            if message_id:
+                                if message_id in seen_ids:
+                                    continue
+                                seen_ids.add(message_id)
+                                seen_order.append(message_id)
+                                if len(seen_order) > YT_CHAT_SEEN_LIMIT:
+                                    seen_ids.discard(seen_order.popleft())
+                            body = "".join(
+                                run.get("text") or ((run.get("emoji") or {}).get("shortcuts") or [""])[0]
+                                for run in (message.get("message") or {}).get("runs", [])
+                            )
+                            chat.add(
+                                int(message["timestampUsec"]) / 1e6,
+                                (message.get("authorName") or {}).get("simpleText", ""),
+                                body,
+                            )
+                if proc.poll() is not None:
+                    chat.error = "YouTube live chat disconnected; reconnecting"
+                    break
+                stop_evt.wait(2)
+        except Exception as exc:
+            chat.error = f"YouTube live chat error; reconnecting: {exc}"
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+        if stop_evt.wait(YT_CHAT_RECONNECT_S):
+            break
+    # Keep chat.alive true while video capture is running; the watcher owns the final stop decision.
 
 
 # ---------------- recorder ----------------
@@ -497,13 +535,15 @@ class Recorder:
 
     def __init__(self, url, seg_dir: Path, log: Path):
         self.dir = seg_dir
+        self.started = time.time()
         self.dl = None
         self.ff = None
         seg_dir.mkdir(parents=True, exist_ok=True)
         lf = open(log, "w")
         try:
             self.dl = subprocess.Popen(
-                ["yt-dlp", "--no-warnings", "--no-part", "-f", "b", "-S", SORT, "-o", "-", url],
+                ["yt-dlp", "--no-warnings", "--no-part", "--socket-timeout", "15", "--retries", "2",
+                 "--fragment-retries", "2", "-f", "b", "-S", SORT, "-o", "-", url],
                 stdout=subprocess.PIPE, stderr=lf, start_new_session=True,
             )
             try:
@@ -542,6 +582,18 @@ class Recorder:
 
     def alive(self):
         return self.ff is not None and self.dl is not None and self.ff.poll() is None and self.dl.poll() is None
+
+    def stalled(self, now=None):
+        """Detect a live process tree that has stopped writing its rolling buffer."""
+        now = time.time() if now is None else float(now)
+        segs = self.segments()
+        if not segs:
+            return now - self.started > RECORDER_STALL_S
+        try:
+            last_write = segs[-1][1].stat().st_mtime
+        except OSError:
+            return True
+        return now - last_write > RECORDER_STALL_S
 
     def segments(self):
         """[(wall_start, path)] oldest first. The newest file may still be growing."""
@@ -590,6 +642,39 @@ class Recorder:
         # Stop FFmpeg first so the pipe closes before yt-dlp is asked to exit.
         self._stop_process(self.ff)
         self._stop_process(self.dl)
+
+
+def _reconnect_recorder(job, jd: Path, stop_evt):
+    """Reconnect only after a new non-empty rolling-buffer segment is observed."""
+    errors = []
+    segment_dir = jd / "buffer"
+    for attempt, delay in enumerate(RECONNECT_DELAYS, start=1):
+        set_status(jd, "live", 0, f"Video capture disconnected; reconnect attempt {attempt}/{len(RECONNECT_DELAYS)} after {delay}s")
+        if stop_evt.wait(delay):
+            return None, "Stopped"
+        existing = {f.name for f in segment_dir.glob("seg_*.ts")}
+        candidate = None
+        try:
+            candidate = Recorder(job["url"], segment_dir, jd / "record.log")
+            ready_until = time.monotonic() + RECORDER_READY_S
+            while candidate.alive() and time.monotonic() < ready_until:
+                for _, segment in candidate.segments():
+                    try:
+                        if segment.name not in existing and segment.stat().st_size > 0:
+                            return candidate, f"Video recorder reconnected on attempt {attempt}."
+                    except OSError:
+                        continue
+                if stop_evt.wait(0.25):
+                    candidate.close()
+                    return None, "Stopped"
+            candidate.close()
+            errors.append("no new non-empty video segment appeared after restart")
+        except Exception as exc:
+            if candidate is not None:
+                candidate.close()
+            errors.append(str(exc)[:300])
+    detail = errors[-1] if errors else "no retry was available"
+    return None, f"Video capture stopped and could not reconnect after {len(RECONNECT_DELAYS)} attempts: {detail}"
 
 
 # ---------------- the watcher ----------------
@@ -653,9 +738,14 @@ def run(key):
             if time.time() > deadline:
                 why_stop = f"Stopped after {job.get('hours')} hours"
                 break
-            if not rec.alive():
-                why_stop = "The stream ended"
-                break
+            if not rec.alive() or rec.stalled():
+                rec.close()
+                rec, reconnect_status = _reconnect_recorder(job, jd, stop_evt)
+                if rec is None:
+                    why_stop = reconnect_status
+                    break
+                set_status(jd, "live", 0, reconnect_status)
+                continue
             if not chat.alive and "chat" in basis:
                 why_stop = chat.error or "Chat ended"
                 break
@@ -718,7 +808,8 @@ def run(key):
                                       + (f". {chat.error}" if chat.error else ""))
     finally:
         stop_evt.set()
-        rec.close()
+        if rec is not None:
+            rec.close()
         msgs = chat.snapshot()
         _publish(jd, meta, job, msgs, time.time() - t0, clips, "", scan)
         for f in (jd / "buffer").glob("*"):
