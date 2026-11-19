@@ -17,6 +17,7 @@ import subprocess
 import threading
 import psutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import ai_review, library, signals, spikes
@@ -32,6 +33,156 @@ SORT = "res,fps,vbr"
 TWITCH_CH = re.compile(r"(?:^|//)(?:www\.|m\.)?twitch\.tv/([A-Za-z0-9_]{3,25})/?(?:\?.*)?$")
 KICK_CH = re.compile(r"(?:^|//)(?:www\.)?kick\.com/([A-Za-z0-9_-]+)/?(?:\?.*)?$")
 YOUTUBE = re.compile(r"(youtube\.com|youtu\.be)/")
+
+
+LIVE_LOCK = JOBS / ".live-worker.lock"
+
+
+def _lock_owner():
+    try:
+        owner = read_json(LIVE_LOCK, {}) or {}
+        pid = int(owner.get("pid") or 0)
+        if pid <= 0:
+            return None
+    except (OSError, ValueError, TypeError):
+        return None
+    try:
+        proc = psutil.Process(pid)
+        if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return None
+        created = owner.get("create_time")
+        if created is not None and abs(proc.create_time() - float(created)) > 2.0:
+            return None
+        return owner
+    except psutil.AccessDenied:
+        return {"pid": pid, "job": owner.get("job"), "unknown": True}
+    except (psutil.NoSuchProcess, ValueError, TypeError):
+        return None
+
+
+def _legacy_live_owner(exclude_job=None):
+    """Detect a live worker started before the lock-file protocol was installed."""
+    if not JOBS.is_dir():
+        return None
+    for jd in JOBS.iterdir():
+        if not jd.is_dir() or jd.name == exclude_job:
+            continue
+        job = read_json(jd / "job.json", {}) or {}
+        if not job.get("live"):
+            continue
+        info = read_json(jd / "live.json", {}) or {}
+        pid = info.get("pid")
+        if not pid or info.get("ended"):
+            continue
+        try:
+            proc = psutil.Process(int(pid))
+            if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                continue
+            created = info.get("create_time")
+            if created is not None and abs(proc.create_time() - float(created)) > 2.0:
+                continue
+            command = proc.cmdline()
+            if "live-run" in command and jd.name in command:
+                return {"job": jd.name}
+        except psutil.AccessDenied:
+            return {"job": jd.name, "unknown": True}
+        except (psutil.NoSuchProcess, TypeError, ValueError):
+            continue
+    return None
+
+
+def _assert_live_slot_available(exclude_job=None):
+    """Fail closed when another live worker owns the single-source slot."""
+    if LIVE_LOCK.exists():
+        owner = _lock_owner()
+        if owner:
+            if owner.get("unknown"):
+                raise RuntimeError("The live-worker lock exists but its owner cannot be verified; refusing to start another source.")
+            if owner.get("job") != exclude_job:
+                raise RuntimeError(
+                    f"Clipper already has a live source running or paused: {owner.get('job') or 'unknown job'}. "
+                    "Stop that source before starting another."
+                )
+        else:
+            try:
+                if time.time() - LIVE_LOCK.stat().st_mtime < 10:
+                    raise RuntimeError("Another live source is starting; try again in a moment.")
+                LIVE_LOCK.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise RuntimeError(f"Could not clear a stale live-worker lock: {exc}") from exc
+    legacy = _legacy_live_owner(exclude_job)
+    if legacy:
+        if legacy.get("unknown"):
+            raise RuntimeError("An existing live worker was found but its identity cannot be verified; refusing to start another source.")
+        raise RuntimeError(
+            f"An existing live source is still running: {legacy.get('job')}. "
+            "Stop that source before starting another."
+        )
+
+
+@contextmanager
+def _slot_guard():
+    """Serialize lock recovery and acquisition across independent OS processes."""
+    JOBS.mkdir(parents=True, exist_ok=True)
+    guard_path = JOBS / ".live-worker.guard"
+    with guard_path.open("a+b") as guard:
+        guard.seek(0, os.SEEK_END)
+        if guard.tell() == 0:
+            guard.write(b"0")
+            guard.flush()
+        guard.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(guard.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                guard.seek(0)
+                msvcrt.locking(guard.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
+
+
+def _claim_live_slot(key):
+    """Atomically claim the one-live-source slot across dashboard and CLI processes."""
+    JOBS.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time(),
+        "job": str(key),
+        "started": time.time(),
+    }
+    with _slot_guard():
+        _assert_live_slot_available(key)
+        try:
+            fd = os.open(str(LIVE_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise RuntimeError("Another live source claimed the slot first.") from exc
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                json.dump(payload, out)
+                out.flush()
+                os.fsync(out.fileno())
+        except Exception:
+            LIVE_LOCK.unlink(missing_ok=True)
+            raise
+    return payload
+
+
+def _release_live_slot(owner):
+    """Release only a lock still owned by this process/job."""
+    current = read_json(LIVE_LOCK, {}) or {}
+    if (current.get("pid") == owner.get("pid")
+            and current.get("job") == owner.get("job")
+            and current.get("create_time") == owner.get("create_time")):
+        LIVE_LOCK.unlink(missing_ok=True)
 
 
 class NotLive(RuntimeError):
@@ -103,6 +254,8 @@ def new_job(target, hours=6.0, top_n=30, basis=("chat",), keywords="", min_score
 
 def start_process(jd: Path):
     """Run the watcher detached, so it keeps going if the dashboard restarts."""
+    with _slot_guard():
+        _assert_live_slot_available(jd.name)
     import sys
     log = open(jd / "live.log", "a")
     # Windows: own process group and a hidden console (its yt-dlp and ffmpeg children share it, so no windows pop up)
@@ -426,14 +579,40 @@ def run(key):
                                                           lambda e: setattr(chat, "error", e)), daemon=True)
     else:
         reader = threading.Thread(target=youtube_chat, args=(job["url"], jd, chat, stop_evt), daemon=True)
-    reader.start()
-    rec = Recorder(job["url"], jd / "buffer", jd / "record.log")
+    try:
+        slot_owner = _claim_live_slot(key)
+    except RuntimeError as exc:
+        set_status(jd, "error", 0, "", str(exc))
+        raise
+
+    rec = None
+    try:
+        reader.start()
+        rec = Recorder(job["url"], jd / "buffer", jd / "record.log")
+    except Exception as exc:
+        stop_evt.set()
+        if reader.is_alive():
+            reader.join(timeout=5)
+        if rec is not None:
+            rec.close()
+        _release_live_slot(slot_owner)
+        set_status(jd, "error", 0, "", f"Could not start live capture: {exc}")
+        raise
+
     deadline = t0 + float(job.get("hours") or 6) * 3600
     clips, why_stop = [], "Stopped"
     basis = job.get("basis") or ["chat"]
     listen = "audio" in basis or "speech" in basis
     scan, heard = None, set()
-    write_json(jd / "live.json", {**(read_json(jd / "live.json", {}) or {}), "pid": os.getpid(), "t0": t0})
+    try:
+        write_json(jd / "live.json", {**(read_json(jd / "live.json", {}) or {}), "pid": os.getpid(),
+                                      "create_time": psutil.Process(os.getpid()).create_time(), "t0": t0})
+    except Exception as exc:
+        stop_evt.set()
+        rec.close()
+        _release_live_slot(slot_owner)
+        set_status(jd, "error", 0, "", f"Could not persist live worker state: {exc}")
+        raise
     try:
         while True:
             if stop_evt.wait(CHECK_S) or (jd / "stop").exists():
@@ -522,6 +701,7 @@ def run(key):
         write_json(jd / "live.json", {**info, "ended": time.time()})
         n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
         set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
+        _release_live_slot(slot_owner)
 
 
 def _publish(jd, meta, job, msgs, elapsed, clips, note, scan=None):

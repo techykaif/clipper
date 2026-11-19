@@ -29,5 +29,5 @@ Default to one source and one render. Use bounded buffers, small frame samples, 
 2. Track each worker by job key and PID with stale-process detection; do not assume a PID is alive based only on a status file.
 3. Add pause/resume semantics to the live watcher without discarding its rolling buffer or chat cursor.
 4. Expose worker health, current source, queued candidates, last error, CPU/RAM/disk usage and actions in the existing dashboard.
-5. Keep defaults at one monitored source and one render; preserve manual app launch and make shutdown idempotent.
+5. Enforce one live source with an OS-guarded cross-process slot and stale-owner recovery; keep one render serialized by the dashboard lock. Preserve manual app launch and make shutdown idempotent.
 6. Add unit tests for state transitions and process liveness; perform live-stream and hardware tests only on the user's target machines.
