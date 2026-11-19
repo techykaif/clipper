@@ -289,7 +289,8 @@ def sidebar_html(cur=None):
         k = len(c.get("clips", []))
         on = " on" if jd.name == cur else ""
         if live.running(jd):
-            tag = '<span class="sb-tag live">Live</span>'
+            tag = ('<span class="sb-tag run">Paused</span>' if live.paused(jd)
+                   else '<span class="sb-tag live">Live</span>')
         elif st.get("error"):
             tag = '<span class="sb-tag err">Stopped</span>'
         elif st.get("stage") not in (None, "", "done"):
@@ -472,8 +473,8 @@ def start_analysis(url, top_n, cookies, chat_file, hours, basis, keywords, min_s
     if target and "speech" in basis and not stt.available():
         raise gr.Error("Live streams are transcribed on your computer, which needs the speech-to-text model. "
                        "In a terminal run: clipper stt-download")
-    if not target and basis == ["audio"]:
-        raise gr.Error("Loud voice works on live streams only. For a past stream, pick chat spikes or what's said.")
+    if not target and "audio" in basis:
+        raise gr.Error("Loud voice works on live streams only. Untick it for a past stream, or use a live broadcast.")
     if target:
         jd = live.new_job(target, hours=float(hours or 6), basis=basis, keywords=keywords or "",
                           min_score=int(min_score), antigravity_review=bool(antigravity_review))
@@ -561,7 +562,7 @@ def pause_live(key):
         live.pause(JOBS / key)
     except Exception as exc:
         raise gr.Error(str(exc))
-    return status_html(key), gr.update(visible=False), gr.update(visible=True)
+    return status_html(key), gr.update(visible=False), gr.update(visible=True), sidebar_html(key)
 
 
 def resume_live(key):
@@ -571,7 +572,7 @@ def resume_live(key):
         live.resume(JOBS / key)
     except Exception as exc:
         raise gr.Error(str(exc))
-    return status_html(key), gr.update(visible=True), gr.update(visible=False)
+    return status_html(key), gr.update(visible=True), gr.update(visible=False), sidebar_html(key)
 
 
 def stop_live(key):
@@ -1343,8 +1344,8 @@ def build():
         timer.tick(tick, [job, clip], head_out, **quiet)
         runtime_timer.tick(runtime.html_panel, None, runtime_panel, **quiet)
         stop_btn.click(stop_live, job, [stop_btn, pause_btn, resume_btn, status], **quiet)
-        pause_btn.click(pause_live, job, [status, pause_btn, resume_btn], **quiet)
-        resume_btn.click(resume_live, job, [status, pause_btn, resume_btn], **quiet)
+        pause_btn.click(pause_live, job, [status, pause_btn, resume_btn, side], **quiet)
+        resume_btn.click(resume_live, job, [status, pause_btn, resume_btn, side], **quiet)
         side.click(side_click, None, [job] + ask_out, **quiet)
 
         # deleting (one confirm dialog for everything)
