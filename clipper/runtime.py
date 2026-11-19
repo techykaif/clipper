@@ -119,7 +119,7 @@ def html_panel():
         ("Workers", f"{len(active)} active · {len(stale)} stale · {len(errors)} errors"),
         ("Candidates", str(data["clips"])),
         ("CPU", data["cpu"]),
-        ("Worker memory", data["memory"]),
+        ("App + workers memory", data["memory"]),
         ("Disk", data["disk"]),
     ]
     stats = "".join(
@@ -135,7 +135,7 @@ def html_panel():
     if not rows:
         rows.append("<li>No active or stale workers.</li>")
     return (
-        f"<div class='np-runtime'><div class='np-runtime-head'><b>Runtime health</b>"
+        f"<div class='np-runtime'><div class='np-runtime-head'>"
         f"<span class='{tone}'>{health}</span></div>"
         f"<dl class='np-stats'>{stats}</dl><ul class='np-runtime-jobs'>{''.join(rows)}</ul></div>"
     )
