@@ -35,6 +35,8 @@ RECORDER_READY_S = 10.0
 RECORDER_STALL_S = 30.0
 YT_CHAT_RECONNECT_S = 3
 YT_CHAT_SEEN_LIMIT = 50000
+YOUTUBE_RECONNECT_WAIT_S = 30
+YOUTUBE_END_STATES = {"was_live", "post_live"}
 
 TWITCH_CH = re.compile(r"(?:^|//)(?:www\.|m\.)?twitch\.tv/([A-Za-z0-9_]{3,25})/?(?:\?.*)?$")
 KICK_CH = re.compile(r"(?:^|//)(?:www\.)?kick\.com/([A-Za-z0-9_-]+)/?(?:\?.*)?$")
@@ -542,8 +544,10 @@ class Recorder:
         lf = open(log, "w")
         try:
             self.dl = subprocess.Popen(
-                ["yt-dlp", "--no-warnings", "--no-part", "--socket-timeout", "15", "--retries", "2",
-                 "--fragment-retries", "2", "-f", "b", "-S", SORT, "-o", "-", url],
+                ["yt-dlp", "--no-warnings", "--no-part", "--socket-timeout", "30",
+                 "--retries", "infinite", "--fragment-retries", "infinite",
+                 "--retry-sleep", "http:exp=1:30", "--retry-sleep", "fragment:exp=1:30",
+                 "-f", "b", "-S", SORT, "-o", "-", url],
                 stdout=subprocess.PIPE, stderr=lf, start_new_session=True,
             )
             try:
@@ -644,37 +648,94 @@ class Recorder:
         self._stop_process(self.dl)
 
 
-def _reconnect_recorder(job, jd: Path, stop_evt):
-    """Reconnect only after a new non-empty rolling-buffer segment is observed."""
+def _youtube_live_state(url):
+    """Return live/ended/unknown; extraction errors are inconclusive, never proof that a broadcast ended."""
+    try:
+        info = _ytdlp_json(url, timeout=30)
+    except Exception:
+        return "unknown"
+    status = str(info.get("live_status") or "").lower()
+    if status == "is_live" or info.get("is_live") is True:
+        return "live"
+    if status in YOUTUBE_END_STATES:
+        return "ended"
+    return "unknown"
+
+
+def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
+    """Reconnect only after a new segment is observed.
+
+    YouTube is special: its live extractor can temporarily stop producing fragments while the broadcast
+    remains active. Keep retrying until the user/time limit stops the job or YouTube reports a post-live
+    state twice. A failed metadata request is inconclusive and must not be presented as 'live ended'.
+    """
     errors = []
     segment_dir = jd / "buffer"
-    for attempt, delay in enumerate(RECONNECT_DELAYS, start=1):
-        set_status(jd, "live", 0, f"Video capture disconnected; reconnect attempt {attempt}/{len(RECONNECT_DELAYS)} after {delay}s")
-        if stop_evt.wait(delay):
-            return None, "Stopped"
-        existing = {f.name for f in segment_dir.glob("seg_*.ts")}
-        candidate = None
-        try:
-            candidate = Recorder(job["url"], segment_dir, jd / "record.log")
-            ready_until = time.monotonic() + RECORDER_READY_S
-            while candidate.alive() and time.monotonic() < ready_until:
-                for _, segment in candidate.segments():
-                    try:
-                        if segment.name not in existing and segment.stat().st_size > 0:
-                            return candidate, f"Video recorder reconnected on attempt {attempt}."
-                    except OSError:
-                        continue
-                if stop_evt.wait(0.25):
-                    candidate.close()
-                    return None, "Stopped"
-            candidate.close()
-            errors.append("no new non-empty video segment appeared after restart")
-        except Exception as exc:
-            if candidate is not None:
+    cycle = 0
+    ended_checks = 0
+    youtube = job.get("platform") == "youtube"
+
+    while not stop_evt.is_set():
+        if deadline is not None and time.time() >= deadline:
+            return None, f"Stopped after {job.get('hours')} hours"
+        cycle += 1
+        for attempt, delay in enumerate(RECONNECT_DELAYS, start=1):
+            if deadline is not None and time.time() >= deadline:
+                return None, f"Stopped after {job.get('hours')} hours"
+            set_status(jd, "live", 0,
+                       f"Video capture disconnected; retry cycle {cycle}, attempt {attempt}/{len(RECONNECT_DELAYS)} after {delay}s")
+            if stop_evt.wait(delay):
+                return None, "Stopped"
+            existing = {f.name for f in segment_dir.glob("seg_*.ts")}
+            candidate = None
+            try:
+                candidate = Recorder(job["url"], segment_dir, jd / "record.log")
+                ready_until = time.monotonic() + RECORDER_READY_S
+                while candidate.alive() and time.monotonic() < ready_until:
+                    for _, segment in candidate.segments():
+                        try:
+                            if segment.name not in existing and segment.stat().st_size > 0:
+                                return candidate, f"Video recorder reconnected on cycle {cycle}, attempt {attempt}."
+                        except OSError:
+                            continue
+                    if stop_evt.wait(0.25):
+                        candidate.close()
+                        return None, "Stopped"
+                    if deadline is not None and time.time() >= deadline:
+                        candidate.close()
+                        return None, f"Stopped after {job.get('hours')} hours"
                 candidate.close()
-            errors.append(str(exc)[:300])
-    detail = errors[-1] if errors else "no retry was available"
-    return None, f"Video capture stopped and could not reconnect after {len(RECONNECT_DELAYS)} attempts: {detail}"
+                errors.append("no new non-empty video segment appeared after restart")
+            except Exception as exc:
+                if candidate is not None:
+                    candidate.close()
+                errors.append(str(exc)[:300])
+
+        detail = errors[-1] if errors else "no retry was available"
+        if not youtube:
+            return None, f"Video capture stopped and could not reconnect after {cycle * len(RECONNECT_DELAYS)} attempts: {detail}"
+
+        state = _youtube_live_state(job["url"])
+        if state == "ended":
+            ended_checks += 1
+            if ended_checks >= 2:
+                return None, "YouTube reports that this live broadcast has ended (confirmed twice)."
+            message = "YouTube reported a post-live state once; checking again before ending the watcher"
+        else:
+            ended_checks = 0
+            if state == "live":
+                message = "YouTube still reports this broadcast as live; continuing video recovery"
+            else:
+                message = "YouTube could not confirm that the broadcast ended; keeping the watcher alive"
+
+        set_status(jd, "live", 0, f"{message}. Retrying video capture in {YOUTUBE_RECONNECT_WAIT_S}s. Last error: {detail}")
+        wait_s = YOUTUBE_RECONNECT_WAIT_S
+        if deadline is not None:
+            wait_s = max(0.0, min(wait_s, deadline - time.time()))
+        if stop_evt.wait(wait_s):
+            return None, "Stopped"
+
+    return None, "Stopped"
 
 
 # ---------------- the watcher ----------------
@@ -740,7 +801,7 @@ def run(key):
                 break
             if not rec.alive() or rec.stalled():
                 rec.close()
-                rec, reconnect_status = _reconnect_recorder(job, jd, stop_evt)
+                rec, reconnect_status = _reconnect_recorder(job, jd, stop_evt, deadline=deadline)
                 if rec is None:
                     why_stop = reconnect_status
                     break
