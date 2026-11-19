@@ -213,5 +213,71 @@ class RecorderLifecycleTests(unittest.TestCase):
             self.assertFalse((output.parent / "concat.txt").exists())
 
 
+
+class YouTubeRecorderRecoveryPolicyTests(unittest.TestCase):
+    def test_recorder_uses_long_lived_fragment_retries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            downloader, ffmpeg = Mock(), Mock()
+            downloader.stdout = Mock()
+            downloader.poll.return_value = None
+            ffmpeg.poll.return_value = None
+            with patch.object(live.subprocess, "Popen", side_effect=[downloader, ffmpeg]) as popen:
+                recorder = live.Recorder("https://youtube.com/watch?v=test", root / "buffer", root / "record.log")
+                args = popen.call_args_list[0].args[0]
+                self.assertIn("--retries", args)
+                self.assertEqual(args[args.index("--retries") + 1], "infinite")
+                self.assertIn("--fragment-retries", args)
+                self.assertEqual(args[args.index("--fragment-retries") + 1], "infinite")
+                self.assertIn("fragment:exp=1:30", args)
+                recorder.close()
+
+    def test_youtube_stays_in_recovery_when_provider_still_reports_live(self):
+        class StopEvent:
+            def __init__(self):
+                self.delays = []
+            def is_set(self):
+                return False
+            def wait(self, delay):
+                self.delays.append(delay)
+                return delay == live.YOUTUBE_RECONNECT_WAIT_S
+
+        with tempfile.TemporaryDirectory() as folder:
+            stop_evt = StopEvent()
+            job_dir = Path(folder)
+            job = {"platform": "youtube", "url": "https://youtube.com/watch?v=test"}
+            with patch.object(live, "Recorder", side_effect=RuntimeError("temporary extractor failure")) as recorder, \
+                 patch.object(live, "_youtube_live_state", return_value="live") as state:
+                result, message = live._reconnect_recorder(job, job_dir, stop_evt)
+            self.assertIsNone(result)
+            self.assertEqual(message, "Stopped")
+            self.assertEqual(recorder.call_count, len(live.RECONNECT_DELAYS))
+            state.assert_called_once_with(job["url"])
+            self.assertEqual(stop_evt.delays, [*live.RECONNECT_DELAYS, live.YOUTUBE_RECONNECT_WAIT_S])
+
+    def test_youtube_ends_only_after_two_post_live_checks(self):
+        class StopEvent:
+            def __init__(self):
+                self.delays = []
+            def is_set(self):
+                return False
+            def wait(self, delay):
+                self.delays.append(delay)
+                return False
+
+        with tempfile.TemporaryDirectory() as folder:
+            stop_evt = StopEvent()
+            job_dir = Path(folder)
+            job = {"platform": "youtube", "url": "https://youtube.com/watch?v=test"}
+            with patch.object(live, "Recorder", side_effect=RuntimeError("capture unavailable")) as recorder, \
+                 patch.object(live, "_youtube_live_state", side_effect=["ended", "ended"]):
+                result, message = live._reconnect_recorder(job, job_dir, stop_evt)
+            self.assertIsNone(result)
+            self.assertIn("confirmed twice", message)
+            self.assertEqual(recorder.call_count, 2 * len(live.RECONNECT_DELAYS))
+            self.assertEqual(stop_evt.delays, [*live.RECONNECT_DELAYS, live.YOUTUBE_RECONNECT_WAIT_S,
+                                               *live.RECONNECT_DELAYS])
+
+
 if __name__ == "__main__":
     unittest.main()
