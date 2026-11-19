@@ -1,6 +1,7 @@
 """Suggest crop rectangles: the streamer's face cam and the gameplay area.
 Rects are normalised [x, y, w, h] in 0..1 of the source frame. The user adjusts them in the dashboard."""
 import subprocess
+import warnings
 
 import cv2
 import numpy as np
@@ -39,16 +40,35 @@ def suggest(path, info, split=0.4):
     W, H = info["width"], info["height"]
     face_aspect = (1080 / (1920 * split)) / (W / H)        # normalised-units aspect for the face band
     game_aspect = (1080 / (1920 * (1 - split))) / (W / H)
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    boxes = []
-    for img in _frames(path, info["duration"]):
-        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        ih, iw = g.shape
-        for (x, y, w, h) in cascade.detectMultiScale(g, 1.1, 6, minSize=(max(24, iw // 40),) * 2):
-            boxes.append(((x + w / 2) / iw, (y + h / 2) / ih, w / iw, h / ih))
     game = _fit(0.5, 0.5, game_aspect, 1.0, game_aspect)   # tallest centred crop of the gameplay
+
+    def no_face():
+        return {"face": _fit(0.85, 0.2, 0.3, 0.3 / face_aspect, face_aspect),
+                "game": game, "found": False}
+
+    try:
+        cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        # OpenCV can return an empty classifier when its cascade XML is missing/unreadable.
+        if cascade.empty():
+            warnings.warn("OpenCV face cascade failed to load; using gameplay-only crop.", RuntimeWarning)
+            return no_face()
+
+        boxes = []
+        for img in _frames(path, info["duration"]):
+            g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            ih, iw = g.shape
+            detections = cascade.detectMultiScale(g, 1.1, 6, minSize=(max(24, iw // 40),) * 2)
+            for (x, y, w, h) in detections:
+                boxes.append(((x + w / 2) / iw, (y + h / 2) / ih, w / iw, h / ih))
+    except cv2.error as e:
+        warnings.warn(f"OpenCV face detection failed ({e}); using gameplay-only crop.", RuntimeWarning)
+        return no_face()
+
     if not boxes:
-        return {"face": _fit(0.85, 0.2, 0.3, 0.3 / face_aspect, face_aspect), "game": game, "found": False}
+        return no_face()
+
     # the streamer's face: seen in many frames at about the same place AND big
     # (count x size, so a poster or a small face in the gameplay loses to the face cam)
     b = np.array(boxes)
