@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import ai_review, signals, spikes
+from . import ai_review, library, signals, spikes
 from .common import JOBS, fmt_t, read_json, set_status, video_info, write_json
 
 BUFFER_S = 600          # seconds of video kept on disk
@@ -392,13 +392,19 @@ def run(key):
                     if job.get("antigravity_review"):
                         set_status(jd, "review", 0, f"Antigravity reviewing clip {c['id']}")
                         c["review"] = ai_review.review_clip(jd, c)
-                    clips.append(c)
+                        if c["review"].get("status") == "reviewed" and c["review"].get("verdict") == "REJECT":
+                            library.discard_rejected_clip(jd.name, c["id"])
+                            clips.append({**c, "rejected": True})  # retain for deduplication; never republish
+                        else:
+                            clips.append(c)
+                    else:
+                        clips.append(c)
                 except Exception as e:
                     (cd / "error.log").write_text(str(e))
                     clips.append({**c, "failed": str(e)})
                 _publish(jd, meta, job, msgs, elapsed, clips, chat.error, scan)
             rec.prune(t0 + elapsed - BUFFER_S)
-            n = len([c for c in clips if not c.get("failed")])
+            n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
             set_status(jd, "live", 0, f"Watching for {fmt_t(elapsed)}. {n} clip{'' if n == 1 else 's'} so far"
                                       + (f". {chat.error}" if chat.error else ""))
     finally:
@@ -416,7 +422,7 @@ def run(key):
             f.unlink(missing_ok=True)
         info = read_json(jd / "live.json", {}) or {}
         write_json(jd / "live.json", {**info, "ended": time.time()})
-        n = len([c for c in clips if not c.get("failed")])
+        n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
         set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
 
 
@@ -435,7 +441,7 @@ def _publish(jd, meta, job, msgs, elapsed, clips, note, scan=None):
     old = {c["id"]: c for c in (read_json(jd / "clips.json", {}) or {}).get("clips", [])}
     good = []
     for c in clips:
-        if c.get("failed"):
+        if c.get("failed") or c.get("rejected"):
             continue
         prev = old.get(c["id"]) or {}
         good.append({**c, "what": prev.get("what") or c.get("what", ""), "why": prev.get("why") or c.get("why", "")})

@@ -337,7 +337,7 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
     cd = jd / "clips" / str(n)
     review = read_json(cd / "review.json", {}) or {}
     if review.get("status") == "reviewed" and review.get("verdict") == "REJECT":
-        raise RuntimeError("Antigravity rejected this candidate; it is preserved but held out of production.")
+        raise RuntimeError("Antigravity rejected this candidate; it has been removed from the library.")
     p = props_for(jd, n)
     write_json(cd / "props.json", p)
     out = cd / "final.mp4"

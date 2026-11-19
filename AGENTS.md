@@ -17,6 +17,7 @@ Evolve this fork of Clipper into a locally launched, dashboard-controlled autono
 - Keep defaults conservative: one live stream and one render at a time; disk-based rolling buffer; bounded caches; cleanup old temporary segments.
 - No local generative LLM or Ollama, and no dependency on Antigravity/Claude for the core runtime.
 - Optional Antigravity candidate review is separately user-configurable. It runs only after extraction and must fail to REVIEW (never reject) when unavailable, uncertain or errored.
+- A completed REJECT is automatically removed from the active clip library and sent to the OS Trash / Recycle Bin where available. Keep failed/uncertain reviews; do not delete their media.
 - The Antigravity subprocess must use --sandbox --dangerously-skip-permissions and run from a disposable temporary workspace containing only a sampled low-resolution contact sheet and bounded context text. Never give it the project tree, source clip, full stream, credentials or secrets.
 - Do not silently upload full streams or source clips. Disclose the exact candidate-only payload: sampled frames and bounded transcript/chat metadata.
 - No campaign auto-publishing without user-configured accounts, campaign rules and explicit authorization for the source content/platform. Respect platform terms, creator rights and campaign requirements.

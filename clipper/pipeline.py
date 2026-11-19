@@ -2,7 +2,7 @@
 import traceback
 from pathlib import Path
 
-from . import ai_review, captions, chat, download, face, hotspot, render, signals, spikes, stt, subs
+from . import ai_review, captions, chat, download, face, hotspot, library, render, signals, spikes, stt, subs
 from .common import job_dir, read_json, set_status, write_json, fmt_t
 from .platforms import detect
 
@@ -120,6 +120,9 @@ def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_d
         else:
             _step(jd, "review", progress, f"Antigravity reviewing clip {c['id']}/{n}")
             c["review"] = ai_review.review_clip(jd, c)
+        if c["review"].get("status") == "reviewed" and c["review"].get("verdict") == "REJECT":
+            library.discard_rejected_clip(jd.name, c["id"])
+            summary["clips"] = [item for item in summary.get("clips", []) if int(item.get("id", -1)) != int(c["id"])]
         write_json(jd / "clips.json", summary)
 
     for i, c in enumerate(res["clips"]):
@@ -137,8 +140,9 @@ def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_d
         prepare_clip(cd, c, src, info, lambda f, m: _step(jd, "prepare", base + step * f, f"Clip {c['id']}/{n}: {m}"),
                      captions_words=words)
         review_candidate(c, base + step * 0.95)
-    rejected = sum(1 for c in res["clips"] if (c.get("review") or {}).get("verdict") == "REJECT")
-    set_status(jd, "done", 100, f"{n} clips ready; {rejected} rejected by Antigravity" if antigravity_review else f"{n} clips ready")
+    rejected = n - len(summary.get("clips", [])) if antigravity_review else 0
+    kept = len(summary.get("clips", []))
+    set_status(jd, "done", 100, f"{kept} clips kept; {rejected} rejected and moved to Trash" if antigravity_review else f"{n} clips ready")
 
 
 def prepare_clip(cd: Path, c, src, info, progress=lambda frac, msg: None, captions_words=None):

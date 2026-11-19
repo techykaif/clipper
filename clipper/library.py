@@ -118,3 +118,33 @@ def delete_clips(key: str, ids):
         c["clips"] = [x for x in c.get("clips", []) if x["id"] not in ids]
         write_json(jd / "clips.json", c)
     return done, []
+
+
+
+def discard_rejected_clip(key: str, clip_id: int) -> bool:
+    """Remove a reviewed rejection from the library and send its files to the OS trash.
+
+    This internal quality-gate action deliberately bypasses busy(): the VOD/live
+    review worker owns the candidate while it commits the verdict.
+    Only a persisted, validated REJECT verdict may use this path.
+    """
+    if not key or Path(key).name != key:
+        raise ValueError("Invalid stream key.")
+    jd = JOBS / key
+    if not jd.is_dir() or jd.parent != JOBS:
+        return False
+
+    n = int(clip_id)
+    cd = jd / "clips" / str(n)
+    if cd.exists():
+        review = read_json(cd / "review.json", {}) or {}
+        if review.get("status") != "reviewed" or review.get("verdict") != "REJECT":
+            raise ValueError("Only a completed Antigravity REJECT verdict can be discarded.")
+        _unlink_public(key, n)
+        _discard(cd, f"Clipper rejected {key} clip {n}")
+
+    summary = read_json(jd / "clips.json", {}) or {}
+    if summary:
+        summary["clips"] = [c for c in summary.get("clips", []) if int(c.get("id", -1)) != n]
+        write_json(jd / "clips.json", summary)
+    return True

@@ -23,6 +23,7 @@ GTA Clip Factory is a local-first, user-launched application built on the MIT-li
 - No local generative LLM / Ollama.
 - Antigravity CLI quality review is a locally configurable candidate-only stage after clip extraction. It evaluates a sampled low-resolution contact sheet and bounded transcript/chat context; it never receives source.mp4 or a full stream.
 - The review CLI runs headlessly with --sandbox --dangerously-skip-permissions inside a disposable review workspace. Failed or uncertain reviews stay in REVIEW and never cause deletion.
+- Completed REJECT results are removed from the active clip list and moved to OS Trash / Recycle Bin where available; human-readable review status is shown for KEEP and REVIEW.
 - Use only authorized stream sources; publishing must respect creator permissions, platform policies and campaign terms.
 - The rolling stream buffer temporarily stores segments on disk. Do not claim zero stream data is downloaded; the target is bounded rolling storage rather than full-VOD retention.
 - No automatic campaign publishing until account authorization and campaign constraints are implemented and tested.

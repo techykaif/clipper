@@ -10,7 +10,7 @@ from pathlib import Path
 import gradio as gr
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import ai_review, handoff, library, live, pipeline, render, signals, stt
+from . import ai_review, library, live, pipeline, render, signals, stt
 from .common import CONFIG, JOBS, REMOTION, TMP, config, read_json, write_json, fmt_t, font as font_of, tool
 from .platforms import detect
 
@@ -45,8 +45,8 @@ def clip_choices(key):
 def clip_status(key, c):
     cd = JOBS / key / "clips" / str(c["id"])
     review = read_json(cd / "review.json", {}) or {}
-    if review.get("status") == "reviewed" and review.get("verdict") == "REJECT":
-        return "rejected", "Rejected"
+    if review.get("status") == "reviewed" and review.get("verdict") == "KEEP":
+        return "ready", "Approved"
     if review.get("status") == "needs_review" or review.get("verdict") == "REVIEW":
         return "ready", "Needs review"
     if (cd / "final.mp4").exists():
@@ -238,7 +238,7 @@ def list_html(key, sel=None):
         cls, label = clip_status(key, c)
         on = " on" if sel is not None and c["id"] == sel else ""
         what = (f'<p class="what">{esc(c["what"])}</p>' if c.get("what")
-                else '<p class="what none">Not described yet. Run /clip in Claude Code to write what happens.</p>')
+                else '<p class="what none">Not described yet.</p>')
         rows.append(f"""<div class="np-row{on}">
   <label class="np-tick" title="Select clip {c['id']}"><input type="checkbox" class="np-pick" data-id="{c['id']}" aria-label="Select clip {c['id']}"></label>
   <button class="np-open" data-clip="{c['id']}" aria-label="Open clip {c['id']}">
@@ -316,8 +316,8 @@ def card_html(key, n, note=""):
     if not c:
         return ('<div class="np-card np-card-empty"><p>Pick a clip from the list or a number on the chart to see '
                 'why it was picked.</p></div>')
-    why = esc(c.get("why")) if c.get("why") else f'{esc(c["auto_reason"])} <em>Automatic summary. Run /clip for Claude\'s read.</em>'
-    what = esc(c["what"]) if c.get("what") else "<em>Not written yet. Run /clip in Claude Code.</em>"
+    why = esc(c.get("why")) if c.get("why") else f'{esc(c["auto_reason"])} <em>Automatic selection summary.</em>'
+    what = esc(c["what"]) if c.get("what") else "<em>Not described yet.</em>"
     basis = c.get("basis", ["chat"])
     sub = c.get("sub") or {"chat": c["score"]}
     subs = "".join(f'<span class="chip sc"><b>{v}</b> {signals.NAMES[k]}</span>' for k, v in sub.items())
@@ -758,57 +758,44 @@ def open_studio(key, n):
 
 # ---------------- Antigravity candidate review ----------------
 def review_button_state(key, n):
-    if not key or n is None:
-        return gr.update(visible=False)
-    return gr.update(visible=(JOBS / key / "clips" / str(n) / "source.mp4").is_file())
+    visible = bool(key and n is not None and (JOBS / key / "clips" / str(n) / "source.mp4").is_file())
+    return gr.update(visible=visible, value="Review with Antigravity", interactive=True)
+
+
+def review_start_state():
+    return (
+        gr.update(value="Reviewing with Antigravity…", interactive=False),
+        "<div class='np-note'>Antigravity is checking the clip's sampled frames, transcript and chat. "
+        "This can take a little while; please keep this dashboard open.</div>",
+        gr.update(interactive=False),
+    )
 
 
 def review_with_antigravity(key, n):
     if not key or n is None:
-        raise gr.Error("Open an extracted clip first.")
-    candidate = next((x for x in clips_of(key) if x["id"] == int(n)), None)
-    if not candidate:
-        raise gr.Error("That clip is no longer in the candidate list.")
-    result = ai_review.review_clip(JOBS / key, candidate)
-    verdict = result.get("verdict", "REVIEW")
-    score = result.get("score")
-    score_text = f" ({score}/100)" if score is not None else ""
-    tone = "np-err" if verdict == "REJECT" else "np-ok" if verdict == "KEEP" else ""
-    msg = (f"<div class='np-note {tone}'><b>Antigravity: {esc(verdict)}{score_text}.</b> "
-           f"{esc(result.get('summary') or 'No summary returned.')}</div>")
-    if result.get("status") == "needs_review":
-        msg += "<div class='np-note'>The review did not complete; the clip was not rejected.</div>"
-    return msg, card_html(key, int(n)), list_html(key, int(n))
-
-
-# ---------------- hand-off to Claude ----------------
-def send_to_claude(key, n):
-    """Write the clip's brief, open Claude Code on it, and show the command either way."""
-    if not key or n is None:
-        raise gr.Error("Open a clip first.")
+        return "<div class='np-note np-err'>Open an extracted clip first.</div>", card_html(key, None), list_html(key, None), gr.update(interactive=True)
     try:
-        f = handoff.brief(key, int(n))
-    except FileNotFoundError as ex:
-        raise gr.Error(str(ex))
-    cmd = handoff.prompt(key, int(n))
-    opened = handoff.open_claude(key, int(n))
-    head = ("<b>Sent to Claude.</b> Claude Code opened in a new terminal window and is starting on this clip."
-            if opened else
-            "<b>Ready for Claude.</b> Claude Code isn't installed here or a terminal couldn't be opened, so start "
-            "Claude Code in the Clipper folder and paste this:")
-    return (f'<div class="np-note np-ok">{head}<div class="np-cmd"><code>{esc(cmd)}</code>'
-            f'<button class="np-copy" data-copy="{esc(cmd)}">Copy</button></div>'
-            f'<p>Claude reads <code>{esc(f.relative_to(JOBS.parent).as_posix())}</code>, then adds the subtitles, '
-            f'effects and memes, renders, and asks you what to change.</p></div>')
-
-
-COPY_JS = """
-element.addEventListener('click', (e) => {
-  const b = e.target.closest('[data-copy]');
-  if (!b) return;
-  navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); });
-});
-"""
+        candidate = next((x for x in clips_of(key) if x["id"] == int(n)), None)
+        if not candidate:
+            raise FileNotFoundError("That clip is no longer in the candidate list.")
+        result = ai_review.review_clip(JOBS / key, candidate)
+        verdict = result.get("verdict", "REVIEW")
+        if result.get("status") == "reviewed" and verdict == "REJECT":
+            library.discard_rejected_clip(key, int(n))
+            return (
+                f"<div class='np-note np-err'><b>Rejected and removed.</b> Antigravity scored this clip "
+                f"{esc(result.get('score'))}/100. The clip folder was moved to the system Trash / Recycle Bin "
+                "where available.</div>",
+                card_html(key, None), list_html(key, None),
+                gr.update(choices=clip_choices(key), value=None, interactive=True),
+            )
+        return "", card_html(key, int(n)), list_html(key, int(n)), gr.update(interactive=True)
+    except Exception as exc:
+        return (
+            f"<div class='np-note np-err'><b>Review could not finish.</b> {esc(str(exc))} "
+            "The candidate has not been deleted.</div>",
+            card_html(key, int(n)), list_html(key, int(n)), gr.update(interactive=True),
+        )
 
 
 # ---------------- UI ----------------
@@ -1107,11 +1094,6 @@ button[role="tab"].selected::after, button[role="tab"][aria-selected="true"]::af
 #sw-white::before { background: #FFFFFF; } #sw-yellow::before { background: #FFD400; } #sw-sky::before { background: #3FA0FF; }
 #sw-green::before { background: #39FF6A; } #sw-pink::before { background: #FF4FD8; }
 
-/* send to Claude */
-.np-cmd { display: flex; align-items: center; gap: 8px; margin: 8px 0 6px; }
-.np-cmd code { flex: 1; padding: 6px 10px; border-radius: 6px; background: var(--sheet); border: 1px solid var(--rule); font-size: 14px; }
-.np-copy { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--rule); background: var(--sheet); cursor: pointer; font: inherit; font-size: 13px; }
-
 /* media */
 .np-media img, .np-media video { border-radius: 6px; }
 #np-pv img { background: #000; }
@@ -1233,8 +1215,6 @@ def build():
                                 card = gr.HTML(card_html(None, None), js_on_load=None)
                                 review_btn = gr.Button("Review with Antigravity", variant="primary", visible=False)
                                 review_msg = gr.HTML(js_on_load=None)
-                                send_btn = gr.Button("Send to Claude for editing", variant="secondary", visible=False, elem_id="np-send")
-                                send_msg = gr.HTML(js_on_load=COPY_JS)
                                 src_vid = gr.Video(label="Clip as downloaded", show_label=False, interactive=False,
                                                    elem_classes="np-media", visible=False)
 
@@ -1333,7 +1313,9 @@ def build():
         clip.change(highlight, [job, clip], [chart, clip_list], **quiet)
         clip.change(lambda n: gr.update(visible=n is not None), clip, del_clip, **quiet)
         clip.change(review_button_state, [job, clip], review_btn, **quiet)
-        review_btn.click(review_with_antigravity, [job, clip], [review_msg, card, clip_list], **quiet)
+        review_btn.click(review_start_state, None, [review_btn, review_msg, clip], queue=False).then(
+            review_with_antigravity, [job, clip], [review_msg, card, clip_list, clip], **quiet
+        ).then(review_button_state, [job, clip], review_btn, **quiet)
         clip.change(load_clip, [job, clip], [card, src_vid] + editor_fields + [final_vid, files], **quiet).then(
             apply_edit, edit_inputs, [crop_view, pv], **quiet)
         for comp in editor_fields:      # user edits only (not the values load_clip fills in)
@@ -1346,9 +1328,6 @@ def build():
             do_render, [job, clip], [render_msg, final_vid, files], **quiet)
         studio_btn.click(apply_edit, edit_inputs, [crop_view, pv], **quiet).then(open_studio, [job, clip], render_msg, **quiet)
 
-        # hand-off to Claude
-        clip.change(lambda n: (gr.update(visible=n is not None), ""), clip, [send_btn, send_msg], **quiet)
-        send_btn.click(send_to_claude, [job, clip], send_msg)
     return demo
 
 

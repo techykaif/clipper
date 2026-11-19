@@ -22,7 +22,7 @@
 
 ## M3 — Autonomous candidate workflow
 - [ ] Candidate queue, deterministic scoring, deduplication and clip extraction.
-- [x] Optional Antigravity quality gate for extracted candidates (KEEP / REJECT / REVIEW); reject is non-destructive and blocks rendering.
+- [x] Optional Antigravity quality gate for extracted candidates (KEEP / REJECT / REVIEW); rejected media is removed from the active library and sent to OS Trash / Recycle Bin where available.
 - [x] Isolated sampled-frame review workspace, structured JSON verdict validation, bounded timeout and fail-to-REVIEW behavior.
 - [ ] Add configurable provider/model budgets and review-quality calibration from user feedback.
 

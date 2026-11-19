@@ -3,6 +3,7 @@
 - Do not use a local generative model or Ollama.
 - The existing Claude Code handoff remains a manual editing workflow and is never required by the running app.
 - Optional Antigravity CLI review is allowed only as a locally configurable candidate-quality gate after a clip has been extracted. It may return KEEP, REJECT or REVIEW; failures and uncertain results must never reject a clip.
+- A completed, schema-validated REJECT automatically removes that clip from the active library and sends its folder to the OS Trash / Recycle Bin where available. REVIEW, KEEP, CLI errors and malformed responses must never delete media.
 - Launch Antigravity headlessly with both --sandbox and --dangerously-skip-permissions, from a disposable temporary workspace containing only a low-resolution sampled-frame contact sheet and bounded transcript/chat metadata. Never include source.mp4, full recordings, project files, credentials or secrets in that workspace.
 - The permission-bypass flag auto-approves all Antigravity tool calls; retain the isolated workspace and sandbox requirement. Do not let review tasks edit project code, modify source media, run publishing actions or access unrelated user files.
 - Optional cloud inference is user-configurable, candidate-only, quota-aware and privacy-disclosed. No full livestream or source clip is uploaded by the review gate.
