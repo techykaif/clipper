@@ -62,8 +62,8 @@ def suggest(path, info, split=0.4):
             detections = cascade.detectMultiScale(g, 1.1, 6, minSize=(max(24, iw // 40),) * 2)
             for (x, y, w, h) in detections:
                 boxes.append(((x + w / 2) / iw, (y + h / 2) / ih, w / iw, h / ih))
-    except cv2.error as e:
-        warnings.warn(f"OpenCV face detection failed ({e}); using gameplay-only crop.", RuntimeWarning)
+    except Exception as e:
+        warnings.warn(f"Face detection unavailable ({type(e).__name__}: {e}); using gameplay-only crop.", RuntimeWarning)
         return no_face()
 
     if not boxes:
