@@ -560,6 +560,16 @@ def recover_crashed_worker(jd: Path, record) -> bool:
             same_worker = False
         job = read_json(jd / "job.json", {}) or {}
         if not same_worker or info.get("ended") or job.get("live") is not True:
+            # The job was deleted or a newer worker now owns this directory. Retire this
+            # historical crash record without touching the current session.
+            try:
+                services.annotate_recovery(
+                    service_id, pid, created,
+                    "This crash record no longer matches the current live session; no job files were changed.",
+                    jobs_dir=JOBS,
+                )
+            except Exception:
+                pass
             return False
 
         recovery_error = ""
