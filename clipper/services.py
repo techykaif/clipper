@@ -103,13 +103,15 @@ def _record_time(now):
 def _trim(payload):
     records = payload["services"]
     if len(records) <= MAX_RECORDS:
-        return
+        return False
     terminal = sorted(
         ((key, value) for key, value in records.items() if value.get("state") in TERMINAL_STATES),
         key=lambda pair: float(pair[1].get("updated_at") or 0),
     )
-    for key, _ in terminal[:max(0, len(records) - MAX_RECORDS)]:
+    remove = terminal[:max(0, len(records) - MAX_RECORDS)]
+    for key, _ in remove:
         records.pop(key, None)
+    return bool(remove)
 
 
 def register(service_id, service_type, job_key, pid, create_time, state="starting",
@@ -249,6 +251,7 @@ def snapshot(jobs_dir=None, stale_after=STALE_AFTER_S, now=None):
         stale_after = STALE_AFTER_S
     path, _ = _paths(jobs_dir)
     with _guard(jobs_dir):
+        changed = not path.exists()
         payload = _load(path)
         records = payload["services"]
         for record in records.values():
@@ -264,6 +267,7 @@ def snapshot(jobs_dir=None, stale_after=STALE_AFTER_S, now=None):
                     record["message"] = "Worker process exited without recording a terminal state."
                 record["ended_at"] = stamp
                 record["updated_at"] = stamp
+                changed = True
                 continue
             if alive is None:
                 heartbeat_at = record.get("heartbeat_at", record.get("updated_at", stamp))
@@ -271,10 +275,11 @@ def snapshot(jobs_dir=None, stale_after=STALE_AFTER_S, now=None):
                     age = max(0.0, stamp - float(heartbeat_at))
                 except (TypeError, ValueError):
                     age = stale_after + 1
-                if age > stale_after and record.get("state") != "paused":
+                if age > stale_after and record.get("state") != "paused" and record.get("state") != "unverified":
                     record["state"] = "unverified"
                     record["message"] = "Process identity could not be verified; no recovery action was taken."
                     record["updated_at"] = stamp
+                    changed = True
                 continue
             if record.get("state") == "paused":
                 continue
@@ -283,12 +288,14 @@ def snapshot(jobs_dir=None, stale_after=STALE_AFTER_S, now=None):
                 age = max(0.0, stamp - float(heartbeat_at))
             except (TypeError, ValueError):
                 age = stale_after + 1
-            if age > stale_after:
+            if age > stale_after and record.get("state") != "stale":
                 record["state"] = "stale"
                 record["message"] = "Process exists, but its service heartbeat is overdue."
                 record["updated_at"] = stamp
-        _trim(payload)
-        _save(path, payload)
+                changed = True
+        changed = _trim(payload) or changed
+        if changed:
+            _save(path, payload)
         services = {key: dict(value) for key, value in payload["services"].items()}
     counts = {state: 0 for state in sorted(VALID_STATES)}
     for record in services.values():
