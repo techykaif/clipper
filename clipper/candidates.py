@@ -136,6 +136,7 @@ def _bounded_record(candidate):
         "basis", "sub", "said", "hot_ref", "multiple", "peak_per_min", "avg_per_min", "z",
         "messages", "unique_chatters", "signals", "reaction_share", "top_words", "sample_chat",
         "auto_reason", "what", "why", "quality_adjustment", "quality_flags", "visual_quality",
+        "filtered_reason", "error", "review_verdict",
     )
     record = {key: candidate[key] for key in allowed if key in candidate}
     record["basis"] = list(record.get("basis") or [])[:3]
