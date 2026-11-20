@@ -123,6 +123,25 @@ class CandidateQueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 queue.mark(item["id"], "mystery")
 
+    def test_interrupted_processing_candidate_is_requeued_with_same_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            queue = candidates.CandidateQueue(folder)
+            item = queue.discover([self.candidate(600)])[0]
+            queue.mark(item["id"], "processing")
+            reopened = candidates.CandidateQueue(folder)
+            self.assertEqual(reopened.pending()[0]["id"], item["id"])
+            self.assertEqual(reopened.pending()[0]["queue_state"], "queued")
+            self.assertEqual(reopened.next_id, item["id"] + 1)
+
+    def test_pending_excludes_ready_and_needs_review_candidates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            queue = candidates.CandidateQueue(folder)
+            ready = queue.discover([self.candidate(60)])[0]
+            review = queue.discover([self.candidate(180)])[0]
+            queue.mark(ready["id"], "ready")
+            queue.mark(review["id"], "needs_review")
+            self.assertEqual(queue.pending(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
