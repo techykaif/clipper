@@ -30,13 +30,19 @@ class KickBlocked(RuntimeError):
     pass
 
 
-def _req(method, url, body=None, tries=5):
+class KickStopped(RuntimeError):
+    """The live chat worker was asked to stop during an HTTP request or retry delay."""
+
+
+def _req(method, url, body=None, tries=5, timeout=30, stop_evt=None):
     data = json.dumps(body).encode() if body is not None else None
     headers = dict(HEADERS, **({"Content-Type": "application/json"} if body is not None else {}))
     for i in range(tries):
+        if stop_evt is not None and stop_evt.is_set():
+            raise KickStopped("Kick chat stop requested")
         try:
             with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers, method=method),
-                                        timeout=30) as r:
+                                        timeout=timeout) as r:
                 raw = r.read()
             if raw.lstrip()[:1] not in (b"{", b"["):
                 raise KickBlocked("Kick answered with a web page instead of data (a bot check).")
@@ -49,11 +55,18 @@ def _req(method, url, body=None, tries=5):
                 raise RuntimeError("Kick says this channel or video doesn't exist.")
             if i == tries - 1:
                 raise
-            time.sleep(1.5 * (i + 1) if e.code != 429 else 5 * (i + 1))
+            delay = 1.5 * (i + 1) if e.code != 429 else 5 * (i + 1)
         except (urllib.error.URLError, TimeoutError):
             if i == tries - 1:
                 raise
-            time.sleep(1.5 * (i + 1))
+            delay = 1.5 * (i + 1)
+        else:
+            continue
+        if stop_evt is not None:
+            if stop_evt.wait(delay):
+                raise KickStopped("Kick chat stop requested")
+        else:
+            time.sleep(delay)
 
 
 def _text(content):
@@ -66,8 +79,9 @@ def _epoch(s):
     return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
 
 
-def channel(slug):
-    return _req("GET", f"https://kick.com/api/v2/channels/{slug}")
+def channel(slug, stop_evt=None):
+    return _req("GET", f"https://kick.com/api/v2/channels/{slug}",
+                timeout=10 if stop_evt is not None else 30, stop_evt=stop_evt)
 
 
 def video(uuid):
@@ -144,17 +158,26 @@ def live(slug, on_message, stop_evt, on_error=lambda e: None):
     """Read a live channel's chat until stop_evt is set; on_message(wall_time, user, text). Reconnects with a fresh
     anonymous token when the connection drops (tokens last about 45 minutes)."""
     from websockets.sync.client import connect
-    ch = channel(slug)
+    if stop_evt.is_set():
+        return
+    try:
+        ch = channel(slug, stop_evt=stop_evt)
+    except KickStopped:
+        return
     cid, room = ch["id"], ch["chatroom"]["id"]
     while not stop_evt.is_set():
         try:
             client = f"clipper-{time.time_ns()}"
             conn = _req("POST", f"https://web.kick.com/api/v1/realtime/channels/{cid}/chat/connection",
                         {"client": {"id": client, "type": "web"},
-                         "capabilities": {"accepted_providers": [{"provider": "centrifugo"}]}})
+                         "capabilities": {"accepted_providers": [{"provider": "centrifugo"}]}},
+                        timeout=10, stop_evt=stop_evt)
             url = next(c["credentials"]["url"] for c in conn["data"]["connections"] if c["provider"] == "centrifugo")
-            tok = _req("POST", "https://web.kick.com/api/v1/realtime/auth/connection", {"client_id": client})["data"]["token"]
-            with connect(url, additional_headers={"Origin": "https://kick.com", "User-Agent": UA}, open_timeout=20) as ws:
+            tok = _req("POST", "https://web.kick.com/api/v1/realtime/auth/connection", {"client_id": client},
+                       timeout=10, stop_evt=stop_evt)["data"]["token"]
+            if stop_evt.is_set():
+                break
+            with connect(url, additional_headers={"Origin": "https://kick.com", "User-Agent": UA}, open_timeout=10) as ws:
                 ws.send(json.dumps({"id": 1, "connect": {"token": tok, "name": "clipper"}}))
                 ws.send(json.dumps({"id": 2, "subscribe": {"channel": f"chatrooms.{room}.v2"}}))
                 last_activity = time.monotonic()
@@ -185,6 +208,8 @@ def live(slug, on_message, stop_evt, on_error=lambda e: None):
                             d = pub["data"]
                             d = json.loads(d) if isinstance(d, str) else d
                             on_message(time.time(), (d.get("sender") or {}).get("username", ""), _text(d.get("content")))
+        except KickStopped:
+            return
         except KickBlocked as e:
             on_error(str(e))
             return
