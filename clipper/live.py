@@ -450,15 +450,21 @@ def stop(jd: Path):
                 _resume_locked(jd)
     except Exception as exc:
         resume_error = exc
-    info = read_json(jd / "live.json", {}) or {}
-    pid = info.get("pid")
+    try:
+        root, verified_info = _verified_worker(jd)
+        pid = root.pid
+    except Exception:
+        # A stale/reused PID is never a target for Stop. The marker remains for any
+        # worker that is still in its startup path and will observe it before capture.
+        root, verified_info, pid = None, {}, None
+
     if pid and os.name != "nt":
         try:
-            os.killpg(int(pid), signal.SIGCONT)
+            os.kill(pid, signal.SIGCONT)
         except OSError:
             pass
         try:
-            os.kill(int(pid), signal.SIGTERM)
+            os.kill(pid, signal.SIGTERM)
         except OSError:
             pass
     if resume_error:
