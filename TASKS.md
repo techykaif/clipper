@@ -13,7 +13,7 @@ Work must follow these gates in order; do not start external integrations early:
 
 If the 2026-11-21 deadline conflicts with reliable implementation or acceptance, report the exact unfinished scope instead of marking unchecked work complete or weakening the gates.
 
-## Current batch — live-worker lifecycle (implementation in progress; verification pending)
+## Current batch — live-worker lifecycle + autonomous candidate quality (implementation complete; acceptance pending)
 
 - [x] Reserve the single-live slot atomically during detached worker launch and let the child adopt its reservation.
 - [x] Preserve immediate Stop requests through a readiness handshake; install the signal handler and persist the worker's own PID/creation time before capture begins. Both dashboard and foreground CLI launch use the same managed detached worker; a Stop after chat-reader startup is checked before video recording begins.
@@ -22,9 +22,14 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 - [x] Add worker heartbeats and classify new live workers with missing/stale heartbeats as stale while retaining legacy job compatibility.
 - [x] Surface unexpected chat-reader exits, join reader threads during shutdown, and make Kick HTTP request retries, setup timeouts and websocket polling stop-aware.
 - [x] Release the single-live slot even if publication, cleanup or status writes fail.
-- [x] Add 47 source-level regression test cases across runtime, AI-review and library suites (not yet executed on the target Mac).
-- [ ] Run the complete automated suite on the Mac after pulling this batch.
-- [ ] Validate lifecycle behavior with real authorized livestreams, including interruption and Stop while paused/reconnecting.
+- [x] Add persistent live-candidate records with stable IDs, 60-second deduplication, bounded queue history and explicit queued/processing/ready/rejected/filtered/failed/needs-review states.
+- [x] Recover old queue records conservatively: unfinished candidates are preserved for review, not automatically re-cut against a reset rolling-buffer timeline.
+- [x] Add sampled-frame blur, brightness and low-motion risk scoring; unavailable frame decoding fails open. This is a quality signal, not a semantic GTA menu/photo-mode classifier.
+- [x] Wire quality scoring into VOD/live clip preparation and show persistent candidate totals in the runtime dashboard.
+- [x] Add 59 source-level regression test methods across runtime, AI-review, library and candidate suites. The previous 47-test revision passed on the Mac; the 12 newly added candidate/runtime tests still need a fresh local run.
+- [ ] Run the complete updated automated suite on the Mac after pulling this batch.
+- [ ] Validate live-worker pause/resume/stop and real authorized-stream recovery behavior.
+- [ ] Validate visual scoring against representative GTA V/VI clips and tune thresholds from observed false positives/negatives.
 - [ ] Exercise Windows-specific process/locking paths.
 
 This batch is not marked ready until the local suite and functional checks pass.
@@ -54,7 +59,7 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [ ] Validate i3 / 16 GB on Windows after the Mac path is stable.
 
 ## M3 — Autonomous candidate workflow
-- [ ] Candidate queue, deterministic scoring, deduplication and clip extraction.
+- [x] Persistent live candidate queue, stable IDs, deduplication, restart-safe state preservation and live clip extraction; visual-quality scores are applied before acceptance.
 - [x] Optional Antigravity quality gate for extracted candidates (KEEP / REJECT / REVIEW); rejected media is removed from the active library and sent to OS Trash / Recycle Bin where available.
 - [x] Isolated sampled-frame review workspace, structured JSON verdict validation, bounded timeout and fail-to-REVIEW behavior.
 - [ ] Add configurable provider/model budgets and review-quality calibration from user feedback.
@@ -70,7 +75,7 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [ ] Manual submission package fallback.
 
 ## M6 — Reliability and analytics
-- [ ] Persistent queues, crash recovery, storage retention policy and notifications.
+- [ ] Persistent render/runtime queues, rolling-buffer recovery, storage retention policy and notifications. The live candidate queue is implemented, but it cannot reconstruct the previous worker's rolling video buffer after a crash.
 - [ ] Metrics and campaign performance/earnings tracking.
 
 ## Rules
