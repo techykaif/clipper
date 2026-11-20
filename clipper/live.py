@@ -22,7 +22,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import ai_review, candidates, library, signals, spikes
+from . import ai_review, candidates, library, services, signals, spikes
 from .common import JOBS, fmt_t, read_json, set_status, video_info, write_json
 
 BUFFER_S = 600          # seconds of video kept on disk
@@ -45,6 +45,42 @@ YOUTUBE = re.compile(r"(youtube\.com|youtu\.be)/")
 
 
 LIVE_LOCK = JOBS / ".live-worker.lock"
+
+
+def _service_id(jd: Path) -> str:
+    return f"live:{Path(jd).name}"
+
+
+def _service_identity(jd: Path):
+    info = read_json(Path(jd) / "live.json", {}) or {}
+    return info.get("pid"), info.get("create_time")
+
+
+def _service_update(jd: Path, state=None, message=None, terminal=False):
+    """Best-effort lifecycle telemetry; the job's live.json remains the control-plane source of truth."""
+    pid, created = _service_identity(jd)
+    if not pid or created is None:
+        return
+    try:
+        if terminal:
+            services.finish(_service_id(jd), pid, created, state=state or "stopped",
+                            message=message or "", jobs_dir=JOBS)
+        else:
+            services.update(_service_id(jd), pid, created, state=state, message=message, jobs_dir=JOBS)
+    except Exception:
+        # A registry problem must not strand a worker or prevent its cleanup.
+        return
+
+
+def _register_service(jd: Path, info, state="starting"):
+    job = read_json(Path(jd) / "job.json", {}) or {}
+    return services.register(
+        _service_id(jd), "live-worker", Path(jd).name,
+        info["pid"], info["create_time"], state=state,
+        message="Live watcher starting" if state == "starting" else "",
+        metadata={"platform": job.get("platform", ""), "source_id": job.get("id", "")},
+        jobs_dir=JOBS,
+    )
 
 
 def _lock_owner():
@@ -298,6 +334,7 @@ def start_process(jd: Path):
                 raise
             write_json(jd / "live.json", {**owner, "paused": False, "pause_state": "running",
                                           "ready": False})
+            _register_service(jd, owner, state="starting")
         return int(process.pid)
     except Exception:
         if owner is not None:
@@ -398,6 +435,7 @@ def _pause_locked(jd: Path):
         ) from exc
     write_json(jd / "live.json", {**info, "paused": True, "pause_state": "paused",
                                   "paused_at": time.time()})
+    _service_update(jd, state="paused", message="Live watcher paused")
     return True
 
 
@@ -429,6 +467,7 @@ def _resume_locked(jd: Path):
         raise RuntimeError("Could not resume every process in the live worker tree: " + "; ".join(errors[:3]))
     write_json(jd / "live.json", {**info, "paused": False, "pause_state": "running",
                                   "resumed_at": time.time()})
+    _service_update(jd, state="running", message="Live watcher resumed")
     return True
 
 
@@ -483,6 +522,7 @@ def stop(jd: Path):
     with _slot_guard():
         (jd / "stop").touch()
         info = read_json(jd / "live.json", {}) or {}
+        _service_update(jd, state="stopping", message="Stop requested")
         try:
             if _pause_state(info) in ("requested", "paused"):
                 _resume_locked(jd)
@@ -564,6 +604,12 @@ def _heartbeat_loop(jd: Path, stop_evt):
             heartbeat.touch()
         except OSError:
             pass
+        pid, created = _service_identity(jd)
+        if pid and created is not None:
+            try:
+                services.heartbeat(_service_id(jd), pid, created, jobs_dir=JOBS)
+            except Exception:
+                pass
 
 
 def twitch_chat(channel, chat: Chat, stop_evt):
@@ -815,10 +861,12 @@ def _prepare_live_worker(jd: Path, slot_owner, stop_evt) -> bool:
                 write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
                                               "paused": False, "pause_state": "stopped"})
                 set_status(jd, "done", 100, "Stopped before live capture started")
+                _service_update(jd, state="stopped", message="Stopped before capture started", terminal=True)
             finally:
                 _release_live_slot(slot_owner)
             return False
         write_json(jd / "live.json", {**info, "ready": True, "ready_at": time.time()})
+        _service_update(jd, state="running", message="Live capture ready")
         return True
 
 
@@ -834,8 +882,10 @@ def _finish_stopped_live_start(jd: Path, slot_owner, stop_evt, reader):
                                       "paused": False, "pause_state": "stopped"})
         if cleanup_error:
             set_status(jd, "error", 0, "", cleanup_error)
+            _service_update(jd, state="failed", message=cleanup_error, terminal=True)
         else:
             set_status(jd, "done", 100, "Stopped before video recording started")
+            _service_update(jd, state="stopped", message="Stopped before video recording started", terminal=True)
     finally:
         _release_live_slot(slot_owner)
 
@@ -952,17 +1002,20 @@ def run(key):
     except Exception as exc:
         _release_live_slot(slot_owner)
         set_status(jd, "error", 0, "", f"Could not initialize candidate queue: {exc}")
+        _service_update(jd, state="failed", message=f"Could not initialize candidate queue: {exc}", terminal=True)
         raise
 
     try:
         info = read_json(jd / "live.json", {}) or {}
-        write_json(jd / "live.json", {**info, "pid": os.getpid(),
-                                      "create_time": psutil.Process(os.getpid()).create_time(),
-                                      "t0": t0, "ready": False, "paused": False,
-                                      "pause_state": "running"})
+        info = {**info, "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "t0": t0, "ready": False, "paused": False, "pause_state": "running"}
+        write_json(jd / "live.json", info)
+        _register_service(jd, info, state="starting")
     except Exception as exc:
         _release_live_slot(slot_owner)
         set_status(jd, "error", 0, "", f"Could not persist live worker identity: {exc}")
+        _service_update(jd, state="failed", message=f"Could not persist live worker identity: {exc}", terminal=True)
         raise
 
     # Do not start chat or video capture until an early Stop request has been checked.
@@ -984,6 +1037,7 @@ def run(key):
             rec.close()
         _release_live_slot(slot_owner)
         set_status(jd, "error", 0, "", f"Could not start live capture: {exc}")
+        _service_update(jd, state="failed", message=f"Could not start live capture: {exc}", terminal=True)
         raise
 
     deadline = t0 + float(job.get("hours") or 6) * 3600
@@ -1004,6 +1058,7 @@ def run(key):
             chat.error = "Chat reader did not stop after worker-state persistence failed."
         _release_live_slot(slot_owner)
         set_status(jd, "error", 0, "", f"Could not persist live worker state: {exc}")
+        _service_update(jd, state="failed", message=f"Could not persist live worker state: {exc}", terminal=True)
         raise
     heartbeat_stop = threading.Event()
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, args=(jd, heartbeat_stop), daemon=True)
@@ -1139,6 +1194,7 @@ def run(key):
                                           "paused": False, "pause_state": "stopped"})
             n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
             set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
+            _service_update(jd, state="stopped", message=why_stop, terminal=True)
         except Exception as cleanup_exc:
             # Cleanup errors must not strand the single-live-source lock.
             try:
@@ -1150,6 +1206,8 @@ def run(key):
                 write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
                                               "paused": False, "pause_state": "stopped",
                                               "cleanup_error": str(cleanup_exc)[:1000]})
+                _service_update(jd, state="failed", message=f"Live worker cleanup failed: {cleanup_exc}",
+                                terminal=True)
             except Exception:
                 pass
         finally:
