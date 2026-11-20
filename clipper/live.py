@@ -287,10 +287,14 @@ def start_process(jd: Path):
                 raise RuntimeError("Could not verify the newly launched live worker process.") from exc
             owner = {"pid": int(process.pid), "create_time": created, "job": jd.name, "started": time.time()}
             fd = os.open(str(LIVE_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as out:
-                json.dump(owner, out)
-                out.flush()
-                os.fsync(out.fileno())
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as out:
+                    json.dump(owner, out)
+                    out.flush()
+                    os.fsync(out.fileno())
+            except Exception:
+                LIVE_LOCK.unlink(missing_ok=True)
+                raise
             write_json(jd / "live.json", {**owner, "paused": False, "pause_state": "running"})
         return int(process.pid)
     except Exception:
