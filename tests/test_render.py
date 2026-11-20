@@ -75,6 +75,36 @@ class RenderOutputValidationTests(unittest.TestCase):
                 render.validate_render_output(path, 12.0, 30.0, probe=self.probe)
 
 
+class RenderResourceProfileTests(unittest.TestCase):
+    def test_low_available_memory_forces_single_render_tab(self):
+        memory = Mock()
+        memory.available = 1024 ** 3
+        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 8 if logical else 4), \\
+             patch.object(render.psutil, "virtual_memory", return_value=memory), \\
+             patch.dict("os.environ", {"CLIPPER_RENDER_CONCURRENCY": ""}):
+            profile = render.resource_profile()
+        self.assertEqual(profile["concurrency"], 1)
+        self.assertLessEqual(profile["offthread_video_cache_bytes"], 512 * 1024 ** 2)
+
+    def test_available_memory_and_physical_cores_allow_limited_parallelism(self):
+        memory = Mock()
+        memory.available = 8 * 1024 ** 3
+        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 8 if logical else 4), \\
+             patch.object(render.psutil, "virtual_memory", return_value=memory), \\
+             patch.dict("os.environ", {"CLIPPER_RENDER_CONCURRENCY": ""}):
+            profile = render.resource_profile()
+        self.assertEqual(profile["concurrency"], 4)
+
+    def test_concurrency_override_is_capped_by_logical_cpu_count(self):
+        memory = Mock()
+        memory.available = 16 * 1024 ** 3
+        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 4 if logical else 2), \\
+             patch.object(render.psutil, "virtual_memory", return_value=memory), \\
+             patch.dict("os.environ", {"CLIPPER_RENDER_CONCURRENCY": "3"}):
+            profile = render.resource_profile()
+        self.assertEqual(profile["concurrency"], 3)
+
+
 class EffectValueValidationTests(unittest.TestCase):
     def test_rejects_infinite_numeric_effect_values(self):
         with self.assertRaisesRegex(render.FxError, "must be finite"):
