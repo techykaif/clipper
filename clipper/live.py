@@ -925,8 +925,6 @@ def run(key):
     previous = read_json(jd / "clips.json", {}) or {}
     clips = list(previous.get("clips", []) or [])
     first_id = max((int(c.get("id") or 0) for c in clips), default=0) + 1
-    candidate_queue = candidates.CandidateQueue(jd, first_id=first_id)
-    candidate_queue.seed(clips)
     t0 = time.time()
     stop_evt = threading.Event()
     signal.signal(signal.SIGTERM, lambda *a: stop_evt.set())
@@ -945,6 +943,15 @@ def run(key):
         slot_owner = _claim_live_slot(key)
     except RuntimeError as exc:
         set_status(jd, "error", 0, "", str(exc))
+        raise
+
+    # Mutate persistent candidate state only after this process owns the one-live slot.
+    try:
+        candidate_queue = candidates.CandidateQueue(jd, first_id=first_id)
+        candidate_queue.seed(clips)
+    except Exception as exc:
+        _release_live_slot(slot_owner)
+        set_status(jd, "error", 0, "", f"Could not initialize candidate queue: {exc}")
         raise
 
     try:
