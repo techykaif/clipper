@@ -134,6 +134,8 @@ class RecorderLifecycleTests(unittest.TestCase):
         class StopEvent:
             def __init__(self):
                 self.delays = []
+            def is_set(self):
+                return False
             def wait(self, delay):
                 self.delays.append(delay)
                 return False
@@ -151,6 +153,8 @@ class RecorderLifecycleTests(unittest.TestCase):
 
     def test_recorder_reconnect_requires_a_new_nonempty_segment(self):
         class StopEvent:
+            def is_set(self):
+                return False
             def wait(self, _delay):
                 return False
 
