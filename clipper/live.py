@@ -1044,10 +1044,11 @@ def run(key):
                 c for c in res.get("clips", [])
                 if c["end"] + SETTLE_S <= elapsed and c["start"] >= elapsed - BUFFER_S + 30
             ]
-            new_candidates = candidate_queue.discover(
+            candidate_queue.discover(
                 eligible, dedupe_window=spikes.DEDUPE, minimum_score=job.get("min_score", 0)
             )
-            for c in new_candidates:
+            # Includes new discoveries and any queued work recovered from an interrupted worker.
+            for c in candidate_queue.pending():
                 c["vod_time"] = fmt_t(c["start"])
                 c["what"], c["why"] = "", ""
                 candidate_queue.mark(c["id"], "processing")
