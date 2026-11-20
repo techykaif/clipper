@@ -675,3 +675,48 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
     finally:
         temp_out.unlink(missing_ok=True)
         temp_srt.unlink(missing_ok=True)
+
+def recover_crashed_render(record, jobs_dir=None) -> bool:
+    """Mark an interrupted render as failed while preserving the last known-good export."""
+    if not isinstance(record, dict) or record.get("type") != "render" or record.get("state") != "crashed":
+        return False
+    if record.get("recovered_at"):
+        return False
+    job_key = str(record.get("job_key") or "")
+    if not job_key or Path(job_key).name != job_key or job_key in (".", ".."):
+        return False
+    try:
+        clip_id = int((record.get("metadata") or {}).get("clip_id"))
+        attempts = int((record.get("metadata") or {}).get("render_attempt"))
+        pid = int(record.get("pid"))
+        created = float(record.get("create_time"))
+    except (TypeError, ValueError):
+        return False
+    if clip_id <= 0 or attempts <= 0 or pid <= 0 or not math.isfinite(created):
+        return False
+    root = Path(jobs_dir or Path.cwd()) / job_key
+    cd = root / "clips" / str(clip_id)
+    manifest_path = cd / "render.json"
+    manifest = read_json(manifest_path, {}) or {}
+    if manifest.get("state") not in ("queued", "running") or int(manifest.get("attempts") or 0) != attempts:
+        return False
+
+    note = (
+        "The Clipper process exited before this render completed. Any previous final.mp4 was left untouched; "
+        "temporary output from the interrupted attempt was removed. Render this clip again to retry."
+    )
+    _render_state(
+        cd, "failed", failed_at=time.time(), error=note,
+        recovered_previous_run=True, recovery_at=time.time(),
+        recovery_service_id=record.get("id"),
+    )
+    for pattern in (f".final-{pid}-*.rendering.mp4", f".final-{pid}-*.rendering.srt"):
+        for temporary in cd.glob(pattern):
+            temporary.unlink(missing_ok=True)
+    try:
+        services.annotate_recovery(
+            str(record.get("id") or ""), pid, created, note, jobs_dir=jobs_dir,
+        )
+    except Exception:
+        pass
+    return True
