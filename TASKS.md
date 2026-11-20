@@ -26,7 +26,7 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 - [x] Recover old queue records conservatively: unfinished candidates are preserved for review, not automatically re-cut against a reset rolling-buffer timeline.
 - [x] Add sampled-frame blur, brightness and low-motion risk scoring; unavailable frame decoding fails open. This is a quality signal, not a semantic GTA menu/photo-mode classifier.
 - [x] Wire quality scoring into VOD/live clip preparation and show persistent candidate totals in the runtime dashboard.
-- [x] Add 62 source-level regression test methods across runtime, AI-review, library and candidate suites. The previous 47-test revision passed on the Mac; the 15 newly added candidate/runtime tests still need a fresh local run.
+- [x] Add 72 source-level regression test methods across runtime, AI-review, library, candidate and render suites. The user confirmed the prior 62-test revision passed on the Mac; the 10 new render tests still need a fresh local run.
 - [ ] Run the complete updated automated suite on the Mac after pulling this batch.
 - [ ] Validate live-worker pause/resume/stop and real authorized-stream recovery behavior.
 - [ ] Validate visual scoring against representative GTA V/VI clips and tune thresholds from observed false positives/negatives.
@@ -65,8 +65,9 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [ ] Add configurable provider/model budgets and review-quality calibration from user feedback.
 
 ## M4 — Automated vertical production
-- [ ] Automatic crop/layout defaults, subtitles where configured, hook and export validation.
-- [ ] Render queue and resource-aware scheduling.
+- [x] Automatic crop/layout defaults, hook timeline, configurable subtitles and default vertical export composition.
+- [x] Add a cross-process single-render admission gate with persisted per-clip render state, waiting progress, wall-clock timeout, process-tree cleanup, temporary output promotion and ffprobe validation for 1080x1920 H.264/yuv420p exports.
+- [ ] Add adaptive resource-aware scheduling based on available CPU/RAM and device profile; the current scheduler safely serializes renders but does not dynamically tune concurrency or quality.
 
 ## M5 — Campaign compliance and publishing
 - [ ] Campaign configuration and source authorization.
