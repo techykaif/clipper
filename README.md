@@ -61,6 +61,7 @@ clipper serve                                   # dashboard at http://localhost:
 clipper analyze https://www.twitch.tv/videos/…  # a past stream, found by chat spikes
 clipper analyze <link> --by chat,speech --words "no way,clip that" --min-score 80   # chat + what's said, keep 80+
 clipper live https://kick.com/somechannel      # a stream that's live now (Twitch, YouTube or Kick; `clipper stop <job>` to stop)
+clipper resume <job>                           # safely recover an interrupted live session
 clipper render <job> <clip number>              # render a Short from the terminal
 clipper list                                    # every stream you've clipped
 clipper stt-download                            # add speech-to-text later
@@ -86,7 +87,7 @@ Clipper watches the stream as it happens:
 - It reads chat live: Twitch through its public chat server, read-only and without a login; YouTube through yt-dlp; Kick through Kick's realtime chat service with an anonymous token.
 - It records the video into a rolling 10-minute buffer.
 - The recorder retries transient HTTP and fragment failures with exponential backoff. If it exits, Clipper restarts it and waits for a fresh segment. For YouTube, recovery continues while the live-status check is live or inconclusive; the watcher ends only after two explicit post-live checks, the configured watch limit, or a manual stop. Twitch and Kick retain bounded recorder restart attempts. YouTube live chat reconnects with message-ID deduplication.
-- One live source is allowed at a time. A paused source still occupies the slot; stop it before starting another.
+- One live source is allowed at a time. A paused source still occupies the slot; stop it before starting another. When a worker crashes, saved chat and buffer timestamps remain tied to the original session clock. Use **Recover & resume** on the dashboard (or `clipper resume <job>`) to continue. Clipper validates every interrupted candidate against the saved segment timeline and only re-extracts moments whose complete footage still exists; it will not join segments across a recording gap.
 - It cuts each spike into a clip once chat calms down.
 
 Times count from when Clipper started watching. It stops when you press **Stop watching**, when the stream ends, or after the number of hours set under *More options* (6 by default). For live jobs, use **Pause** and **Resume** to suspend and continue the watcher plus its media/chat subprocesses. **Stop watching** resumes a paused worker before requesting a clean stop.
