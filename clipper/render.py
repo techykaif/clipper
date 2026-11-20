@@ -579,7 +579,6 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
     """Render one Short through a persistent single-render queue and atomic output promotion."""
     cd = jd / "clips" / str(n)
     cd.mkdir(parents=True, exist_ok=True)
-    storage.require_free_space(jd, f"rendering vertical clip {n}")
     review = read_json(cd / "review.json", {}) or {}
     if review.get("status") == "reviewed" and review.get("verdict") == "REJECT":
         raise RuntimeError("Antigravity rejected this candidate; it has been removed from the library.")
@@ -641,6 +640,7 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
             service_heartbeat_thread = None
 
     try:
+        storage.require_free_space(jd, f"rendering vertical clip {n}")
         with _render_guard(report_progress):
             _render_state(cd, "running", attempts=attempts, started_at=time.time(), error=None,
                           resource_profile=resources)
