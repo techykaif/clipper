@@ -1065,11 +1065,6 @@ def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
 def run(key):
     from .pipeline import prepare_clip
     jd = JOBS / key
-    try:
-        storage.require_free_space(jd, "starting live capture")
-    except storage.StorageSafetyError as exc:
-        set_status(jd, "error", 0, "", str(exc))
-        raise
     job = read_json(jd / "job.json")
     meta = read_json(jd / "meta.json", {}) or {}
     previous = read_json(jd / "clips.json", {}) or {}
@@ -1093,6 +1088,14 @@ def run(key):
         slot_owner = _claim_live_slot(key)
     except RuntimeError as exc:
         set_status(jd, "error", 0, "", str(exc))
+        raise
+
+    try:
+        storage.require_free_space(jd, "starting live capture")
+    except storage.StorageSafetyError as exc:
+        _release_live_slot(slot_owner)
+        set_status(jd, "error", 0, "", str(exc))
+        _service_update(jd, state="failed", message=str(exc), terminal=True)
         raise
 
     # Mutate persistent candidate state only after this process owns the one-live slot.
