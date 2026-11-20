@@ -15,6 +15,7 @@ class DesktopNotificationTests(unittest.TestCase):
         with patch.dict(os.environ, {"CLIPPER_DESKTOP_NOTIFICATIONS": "1"}), \
                 patch.object(notifications.sys, "platform", "darwin"), \
                 patch.object(notifications.subprocess, "run") as run:
+            run.return_value.returncode = 0
             self.assertTrue(notifications.notify('A "title"', "Line one\nLine two"))
         args = run.call_args.args[0]
         self.assertEqual(args[0], "osascript")
