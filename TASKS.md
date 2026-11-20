@@ -79,7 +79,8 @@ This batch is not marked ready until the local suite and functional checks pass.
 
 ## M6 — Reliability and analytics
 - [ ] Restart-persistent rolling video buffer and safe media-timeline recovery. The current recovery path intentionally does not re-cut old timestamps after a worker crash.
-- [ ] Storage retention policy, low-disk safeguards and desktop notifications.
+- [ ] Storage retention policy and desktop notifications.
+- [x] Configurable free-space reserve with fail-closed checks before live capture, while a live source is running, before VOD clip downloads and before Short renders; dashboard health surfaces low-space or inspection failures.
 - [ ] Metrics and campaign performance/earnings tracking.
 
 ## Rules
