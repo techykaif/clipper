@@ -11,8 +11,13 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
+import time
 import wave
+from contextlib import contextmanager
 from pathlib import Path
+
+import psutil
 
 from .common import REMOTION, read_json, tool, write_json
 from . import subs
@@ -333,28 +338,263 @@ def _lines(stream):
         yield buf.decode("utf-8", "replace")
 
 
+RENDER_WALL_TIMEOUT_S = 20 * 60
+RENDER_QUEUE_TIMEOUT_S = 30 * 60
+RENDER_LOCK_NAME = ".clipper-render.lock"
+OUTPUT_WIDTH, OUTPUT_HEIGHT = 1080, 1920
+
+
+@contextmanager
+def _render_guard(progress=lambda pct, msg: None, timeout=RENDER_QUEUE_TIMEOUT_S):
+    """Cross-process single-render gate shared by every Clipper dashboard instance."""
+    REMOTION.mkdir(parents=True, exist_ok=True)
+    lock_path = REMOTION / RENDER_LOCK_NAME
+    lock_file = lock_path.open("a+b")
+    try:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+        started = time.monotonic()
+        acquired = False
+        while not acquired:
+            lock_file.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError:
+                waited = time.monotonic() - started
+                if waited >= timeout:
+                    raise TimeoutError(f"Render queue wait exceeded {int(timeout)} seconds.")
+                progress(0, f"Queued behind another render ({int(waited)}s waiting)")
+                time.sleep(min(1.0, max(0.1, timeout - waited)))
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
+
+
+def _render_state(cd: Path, state: str, **updates):
+    path = cd / "render.json"
+    previous = read_json(path, {}) or {}
+    record = {**previous, **updates, "state": state, "updated_at": time.time()}
+    write_json(path, record)
+    return record
+
+
+def _fps_value(value):
+    try:
+        if isinstance(value, str) and "/" in value:
+            a, b = value.split("/", 1)
+            return float(a) / float(b)
+        return float(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def _probe_output(path: Path):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=45,
+    )
+    if result.returncode:
+        raise RuntimeError("ffprobe could not inspect the rendered file: " + (result.stderr or "unknown error")[-500:])
+    try:
+        return json.loads(result.stdout)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("ffprobe returned invalid output metadata.") from exc
+
+
+def validate_render_output(path: Path, expected_duration: float, expected_fps: float, probe=None):
+    """Reject truncated, wrong-codec or non-vertical exports before promoting them to final.mp4."""
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size < 1024:
+        raise RuntimeError("Rendered output is missing or unexpectedly small.")
+    data = probe if probe is not None else _probe_output(path)
+    if not isinstance(data, dict):
+        raise RuntimeError("Rendered output metadata is not an object.")
+    streams = data.get("streams") or []
+    video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    if not video:
+        raise RuntimeError("Rendered output contains no video stream.")
+    width, height = int(video.get("width") or 0), int(video.get("height") or 0)
+    if (width, height) != (OUTPUT_WIDTH, OUTPUT_HEIGHT):
+        raise RuntimeError(
+            f"Rendered output is {width}x{height}; expected {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} vertical video."
+        )
+    codec = str(video.get("codec_name") or "").lower()
+    if codec != "h264":
+        raise RuntimeError(f"Rendered output uses {codec or 'an unknown codec'}; expected H.264.")
+    pix_fmt = str(video.get("pix_fmt") or "")
+    if pix_fmt and pix_fmt != "yuv420p":
+        raise RuntimeError(f"Rendered output pixel format is {pix_fmt}; expected yuv420p.")
+    actual_duration = _finite_number((data.get("format") or {}).get("duration") or video.get("duration"))
+    if actual_duration <= 0:
+        raise RuntimeError("Rendered output has no valid duration.")
+    tolerance = max(0.75, 2.0 / max(1.0, float(expected_fps or 30)))
+    if expected_duration > 0 and abs(actual_duration - expected_duration) > tolerance:
+        raise RuntimeError(
+            f"Rendered duration is {actual_duration:.2f}s; expected about {expected_duration:.2f}s."
+        )
+    actual_fps = _fps_value(video.get("avg_frame_rate") or video.get("r_frame_rate"))
+    if expected_fps > 0 and actual_fps > 0 and abs(actual_fps - expected_fps) > max(1.1, expected_fps * 0.05):
+        raise RuntimeError(f"Rendered frame rate is {actual_fps:.3f} fps; expected {expected_fps:.3f} fps.")
+    return {
+        "width": width, "height": height, "codec": codec, "pixel_format": pix_fmt,
+        "duration": round(actual_duration, 3), "fps": round(actual_fps, 3) if actual_fps else None,
+        "bytes": path.stat().st_size,
+    }
+
+
+def _finite_number(value, default=0.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _stop_render_process(proc):
+    """Terminate the Remotion process tree, including Chrome/Node children."""
+    try:
+        root = psutil.Process(proc.pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, TypeError):
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        return
+    try:
+        children = root.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        children = []
+    for child in reversed(children):
+        try:
+            child.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    try:
+        root.terminate()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    _, alive = psutil.wait_procs(children + [root], timeout=8)
+    for process in alive:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=3)
+
+
+def _run_remotion(cmd, progress, tail):
+    """Stream render progress while enforcing a hard wall-clock ceiling."""
+    popen_options = {
+        "cwd": REMOTION, "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
+        "env": chrome_env(), "bufsize": 0,
+    }
+    if os.name == "nt":
+        popen_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_options["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **popen_options)
+    finished = threading.Event()
+    timed_out = threading.Event()
+
+    def watchdog():
+        if not finished.wait(RENDER_WALL_TIMEOUT_S):
+            timed_out.set()
+            _stop_render_process(proc)
+
+    monitor = threading.Thread(target=watchdog, name="clipper-render-watchdog", daemon=True)
+    monitor.start()
+    return_code = None
+    try:
+        for line in _lines(proc.stdout):
+            tail[:] = (tail + [line])[-30:]
+            match = re.search(r"Rendered (\d+)/(\d+)", line)
+            if match:
+                progress(100 * int(match.group(1)) / max(1, int(match.group(2))), "Rendering")
+            elif "Encoded" in line or "Stitch" in line:
+                progress(99, "Encoding")
+        return_code = proc.wait()
+    finally:
+        finished.set()
+        monitor.join(timeout=2)
+        if proc.stdout:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+    if timed_out.is_set():
+        raise TimeoutError(f"Remotion exceeded the {RENDER_WALL_TIMEOUT_S}-second render limit.")
+    if return_code != 0:
+        raise RuntimeError("Remotion render failed:\n" + "\n".join(tail[-10:]))
+
+
 def render(jd: Path, n: int, progress=lambda pct, msg: None):
+    """Render one Short through a persistent single-render queue and atomic output promotion."""
     cd = jd / "clips" / str(n)
+    cd.mkdir(parents=True, exist_ok=True)
     review = read_json(cd / "review.json", {}) or {}
     if review.get("status") == "reviewed" and review.get("verdict") == "REJECT":
         raise RuntimeError("Antigravity rejected this candidate; it has been removed from the library.")
+
     p = props_for(jd, n)
     write_json(cd / "props.json", p)
+    expected_duration = length(p)
+    if not math.isfinite(expected_duration) or expected_duration <= 0:
+        raise RuntimeError("The edit produces an empty or invalid timeline.")
     out = cd / "final.mp4"
-    cmd = [tool("npx"), "remotion", "render", "src/index.ts", "ClipShort", str(out), f"--props={cd / 'props.json'}",
-           "--codec=h264", "--crf=16", "--pixel-format=yuv420p", "--color-space=bt709", "--audio-bitrate=320k",
-           "--timeout=120000", "--log=info"]
-    proc = subprocess.Popen(cmd, cwd=REMOTION, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=chrome_env())
-    tail = []
-    for line in _lines(proc.stdout):           # Remotion redraws progress with \r, not \n
-        tail = (tail + [line])[-30:]
-        m = re.search(r"Rendered (\d+)/(\d+)", line)
-        if m:
-            progress(100 * int(m.group(1)) / int(m.group(2)), "Rendering")
-        elif "Encoded" in line or "Stitch" in line:
-            progress(99, "Encoding")
-    if proc.wait() != 0:
-        raise RuntimeError("Remotion render failed:\n" + "\n".join(tail[-10:]))
-    if p["subsEnabled"] and p["words"]:
-        subs.srt(p["words"], timeline(p), cd / "final.srt")
-    return out
+    srt_out = cd / "final.srt"
+    temp_out = cd / f".final-{os.getpid()}-{time.time_ns()}.rendering.mp4"
+    temp_srt = cd / f".final-{os.getpid()}-{time.time_ns()}.rendering.srt"
+    previous = read_json(cd / "render.json", {}) or {}
+    attempts = int(previous.get("attempts") or 0) + 1
+    _render_state(cd, "queued", attempts=attempts, queued_at=time.time(), error=None,
+                  recovered_previous_run=previous.get("state") == "running")
+    try:
+        with _render_guard(progress):
+            _render_state(cd, "running", attempts=attempts, started_at=time.time(), error=None)
+            cmd = [
+                tool("npx"), "remotion", "render", "src/index.ts", "ClipShort", str(temp_out),
+                f"--props={cd / 'props.json'}", "--codec=h264", "--crf=16",
+                "--pixel-format=yuv420p", "--color-space=bt709", "--audio-bitrate=320k",
+                "--timeout=120000", "--log=info",
+            ]
+            tail = []
+            progress(1, "Starting Remotion renderer")
+            _run_remotion(cmd, progress, tail)
+            progress(99, "Validating vertical export")
+            validation = validate_render_output(temp_out, expected_duration, float(p["fps"] or 30))
+            if p["subsEnabled"] and p["words"]:
+                subs.srt(p["words"], timeline(p), temp_srt)
+            temp_out.replace(out)
+            if temp_srt.exists():
+                temp_srt.replace(srt_out)
+            else:
+                srt_out.unlink(missing_ok=True)
+            _render_state(cd, "completed", attempts=attempts, completed_at=time.time(),
+                          output=str(out), output_bytes=validation["bytes"], output_info=validation,
+                          error=None)
+            progress(100, "Export validated and saved")
+            return out
+    except Exception as exc:
+        _render_state(cd, "failed", attempts=attempts, failed_at=time.time(), error=str(exc)[-1500:])
+        raise
+    finally:
+        temp_out.unlink(missing_ok=True)
+        temp_srt.unlink(missing_ok=True)
