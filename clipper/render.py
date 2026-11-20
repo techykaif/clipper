@@ -405,6 +405,36 @@ def _fps_value(value):
         return 0.0
 
 
+def resource_profile():
+    """Choose conservative Remotion tab concurrency and video cache from current device headroom."""
+    try:
+        logical = max(1, int(psutil.cpu_count(logical=True) or os.cpu_count() or 2))
+        physical = max(1, int(psutil.cpu_count(logical=False) or logical))
+        available = max(256 * 1024 * 1024, int(psutil.virtual_memory().available))
+    except (psutil.Error, OSError, TypeError, ValueError, AttributeError):
+        logical, physical, available = 2, 1, 2 * 1024 ** 3
+
+    available_gb = available / (1024 ** 3)
+    # Rendering gets one browser tab under memory pressure; otherwise cap at four and
+    # never schedule more tabs than physical cores or roughly one per 2 GB available.
+    concurrency = min(4, physical, max(1, int(available_gb // 2)))
+    override = os.environ.get("CLIPPER_RENDER_CONCURRENCY", "").strip()
+    if override:
+        try:
+            concurrency = max(1, min(logical, 4, int(override)))
+        except ValueError:
+            pass
+    cache_bytes = int(min(512 * 1024 ** 2, max(96 * 1024 ** 2, available * 0.12)))
+    return {
+        "logical_threads": logical,
+        "physical_cores": physical,
+        "available_memory_bytes": available,
+        "available_memory_gb": round(available_gb, 2),
+        "concurrency": concurrency,
+        "offthread_video_cache_bytes": cache_bytes,
+    }
+
+
 def _probe_output(path: Path):
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
@@ -560,26 +590,33 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
         raise RuntimeError("The edit produces an empty or invalid timeline.")
     out = cd / "final.mp4"
     srt_out = cd / "final.srt"
+    resources = resource_profile()
+    # Root.tsx rounds the source FPS and caps Remotion's composition at 60 fps.
+    expected_render_fps = min(60, max(1, round(float(p["fps"] or 30))))
     temp_out = cd / f".final-{os.getpid()}-{time.time_ns()}.rendering.mp4"
     temp_srt = cd / f".final-{os.getpid()}-{time.time_ns()}.rendering.srt"
     previous = read_json(cd / "render.json", {}) or {}
     attempts = int(previous.get("attempts") or 0) + 1
     _render_state(cd, "queued", attempts=attempts, queued_at=time.time(), error=None,
+                  resource_profile=resources,
                   recovered_previous_run=previous.get("state") == "running")
     try:
         with _render_guard(progress):
-            _render_state(cd, "running", attempts=attempts, started_at=time.time(), error=None)
+            _render_state(cd, "running", attempts=attempts, started_at=time.time(), error=None,
+                          resource_profile=resources)
             cmd = [
                 tool("npx"), "remotion", "render", "src/index.ts", "ClipShort", str(temp_out),
                 f"--props={cd / 'props.json'}", "--codec=h264", "--crf=16",
                 "--pixel-format=yuv420p", "--color-space=bt709", "--audio-bitrate=320k",
+                f"--concurrency={resources['concurrency']}",
+                f"--offthreadvideo-cache-size-in-bytes={resources['offthread_video_cache_bytes']}",
                 "--timeout=120000", "--log=info",
             ]
             tail = []
             progress(1, "Starting Remotion renderer")
             _run_remotion(cmd, progress, tail)
             progress(99, "Validating vertical export")
-            validation = validate_render_output(temp_out, expected_duration, float(p["fps"] or 30))
+            validation = validate_render_output(temp_out, expected_duration, expected_render_fps)
             if p["subsEnabled"] and p["words"]:
                 subs.srt(p["words"], timeline(p), temp_srt)
             temp_out.replace(out)
