@@ -94,8 +94,8 @@ def _num(d, k, default, lo=None, hi=None, where=""):
         v = float(v)
     except (TypeError, ValueError):
         raise FxError(f"{where}: {k} must be a number, got {d.get(k)!r}")
-    if math.isnan(v):
-        raise FxError(f"{where}: {k} is not a number")
+    if not math.isfinite(v):
+        raise FxError(f"{where}: {k} must be finite")
     if lo is not None:
         v = max(lo, v)
     if hi is not None:
