@@ -166,15 +166,15 @@ class CrashedLiveWorkerRecoveryTests(unittest.TestCase):
             jd = jobs / "twitch-live-test"
             jd.mkdir()
             (jd / "job.json").write_text(json.dumps({"live": True}), encoding="utf-8")
+            current = psutil.Process()
+            self_pid = current.pid
+            created = current.create_time()
             (jd / "live.json").write_text(json.dumps({
-                "pid": self_pid := psutil.Process().pid,
-                "create_time": psutil.Process(self_pid).create_time(),
-                "ended": False,
+                "pid": self_pid, "create_time": created, "ended": False,
             }), encoding="utf-8")
             record = {
                 "id": f"live:{jd.name}", "type": "live-worker", "state": "crashed",
-                "pid": self_pid, "create_time": psutil.Process(self_pid).create_time(),
-                "job_key": jd.name,
+                "pid": self_pid, "create_time": created, "job_key": jd.name,
             }
             with patch.object(live, "JOBS", jobs), \
                  patch.object(live, "LIVE_LOCK", jobs / ".live-worker.lock"):
