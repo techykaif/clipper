@@ -559,3 +559,36 @@ class RuntimeCandidateCountTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class LiveBufferResumeStartupTests(unittest.TestCase):
+    def test_resume_startup_preserves_saved_clock_and_buffer_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "live-resume"
+            (jd / "buffer").mkdir(parents=True)
+            (jd / "job.json").write_text(json.dumps({"live": True, "platform": "twitch", "id": "channel"}), encoding="utf-8")
+            (jd / "live.json").write_text(json.dumps({
+                "pid": 999999, "create_time": 1.0, "job": jd.name,
+                "t0": 1700000000.0, "ended": 1700000500.0,
+                "recovery_state": "interrupted", "resume_count": 2,
+            }), encoding="utf-8")
+            child = Mock()
+            child.pid = os.getpid()
+            with patch.object(live, "JOBS", jobs), \
+                    patch.object(live, "LIVE_LOCK", jobs / ".live-worker.lock"), \
+                    patch.object(live, "storage") as storage_mock, \
+                    patch.object(live.subprocess, "Popen", return_value=child):
+                pid = live.start_process(jd, resume=True)
+                info = json.loads((jd / "live.json").read_text(encoding="utf-8"))
+                lock_owner = json.loads((jobs / ".live-worker.lock").read_text(encoding="utf-8"))
+                live._release_live_slot(lock_owner)
+            self.assertEqual(pid, os.getpid())
+            self.assertEqual(info["t0"], 1700000000.0)
+            self.assertEqual(info["resume_count"], 2)
+            self.assertEqual(info["recovery_state"], "resuming")
+            self.assertIsNone(info["ended"])
+            storage_mock.require_free_space.assert_called_once()
+
+
