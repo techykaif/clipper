@@ -69,11 +69,19 @@ def _recover_crashed_analysis(record):
         return False
     jd = JOBS / job_key
     job = read_json(jd / "job.json", {}) or {}
-    if job.get("runtime_service_id") != record.get("id") or job.get("live") is True:
-        return False
     try:
         pid, created = int(record.get("pid")), float(record.get("create_time"))
     except (TypeError, ValueError):
+        return False
+    if job.get("runtime_service_id") != record.get("id") or job.get("live") is True:
+        try:
+            services.annotate_recovery(
+                str(record.get("id") or ""), pid, created,
+                "This crash record belongs to an older analysis run; current job files were left untouched.",
+                jobs_dir=JOBS,
+            )
+        except Exception:
+            pass
         return False
     status = read_json(jd / "status.json", {}) or {}
     note = (
