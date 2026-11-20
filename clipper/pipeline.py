@@ -2,7 +2,7 @@
 import traceback
 from pathlib import Path
 
-from . import ai_review, captions, chat, download, face, hotspot, library, render, signals, spikes, stt, subs
+from . import ai_review, candidates, captions, chat, download, face, hotspot, library, render, signals, spikes, stt, subs
 from .common import job_dir, read_json, set_status, write_json, fmt_t
 from .platforms import detect
 
@@ -140,13 +140,19 @@ def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_d
         prepare_clip(cd, c, src, info, lambda f, m: _step(jd, "prepare", base + step * f, f"Clip {c['id']}/{n}: {m}"),
                      captions_words=words)
         review_candidate(c, base + step * 0.95)
+    # prepare_clip enriches each candidate with a visual-quality adjustment; persist the final scores.
+    write_json(jd / "clips.json", summary)
     rejected = n - len(summary.get("clips", [])) if antigravity_review else 0
     kept = len(summary.get("clips", []))
-    set_status(jd, "done", 100, f"{kept} clips kept; {rejected} rejected and moved to Trash" if antigravity_review else f"{n} clips ready")
+    set_status(jd, "done", 100, f"{kept} clips kept; {rejected} rejected and moved to Trash" if antigravity_review else f"{kept} clips ready")
 
 
-def prepare_clip(cd: Path, c, src, info, progress=lambda frac, msg: None, captions_words=None):
-    """After the clip's source.mp4 exists: hot moment, word timings, face crop, clip.json, edit.json."""
+def prepare_clip(cd: Path, c, src, info, progress=lambda frac, msg: None, captions_words=None, visual_quality=None):
+    """After source.mp4 exists: visual quality, hot moment, word timings, face crop and edit metadata."""
+    if visual_quality is None:
+        progress(0.35, "checking visual quality")
+        visual_quality = candidates.inspect_video(src)
+    c.update(candidates.apply_visual_quality(c, visual_quality))
     progress(0.5, "finding the hot moment")
     hook = hotspot.find(src, c["start"], c.get("hot_ref", c["chat_peak"]), info["duration"])
     try:
@@ -162,7 +168,9 @@ def prepare_clip(cd: Path, c, src, info, progress=lambda frac, msg: None, captio
     progress(0.85, "finding the face cam")
     rects = face.suggest(src, info)
     clip_meta = {"id": c["id"], "start": c["start"], "end": c["end"], "info": info, "hook": list(hook),
-                 "face_found": rects["found"]}
+                 "face_found": rects["found"], "score": c.get("score"),
+                 "signal_score": c.get("signal_score"), "quality_adjustment": c.get("quality_adjustment", 0),
+                 "quality_flags": c.get("quality_flags", []), "visual_quality": c.get("visual_quality")}
     write_json(cd / "clip.json", clip_meta)
     if not (cd / "edit.json").exists():
         write_json(cd / "edit.json", render.default_edit(clip_meta, info, rects))
