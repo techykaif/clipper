@@ -131,6 +131,15 @@ def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_d
         cd = jd / "clips" / str(c["id"])
         cd.mkdir(parents=True, exist_ok=True)
         if (cd / "source.mp4").exists() and (read_json(cd / "clip.json") or {}).get("start") == c["start"]:
+            saved_meta = read_json(cd / "clip.json", {}) or {}
+            assessment = saved_meta.get("visual_quality") or candidates.inspect_video(cd / "source.mp4")
+            c.update(candidates.apply_visual_quality(c, assessment))
+            saved_meta.update({
+                "score": c.get("score"), "signal_score": c.get("signal_score"),
+                "quality_adjustment": c.get("quality_adjustment", 0),
+                "quality_flags": c.get("quality_flags", []), "visual_quality": c.get("visual_quality"),
+            })
+            write_json(cd / "clip.json", saved_meta)
             review_candidate(c, base + step * 0.95)
             continue
         for stale in ("edit.json", "final.mp4", "final.srt", "props.json", "fx.json", "brief.md"):
