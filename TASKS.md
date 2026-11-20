@@ -28,7 +28,8 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 - [x] Wire quality scoring into VOD/live clip preparation and show persistent candidate totals in the runtime dashboard.
 - [x] Add 78 source-level regression test methods across runtime, AI-review, library, candidate and render suites. The user confirmed all 78 passed on the Mac after the render-watchdog test fix.
 - [x] Run the complete 78-test revision on the Mac; the user confirmed it passed.
-- [ ] Run the new 96-test revision on the Mac after pulling the runtime-registry batch (18 new registry/recovery tests added).
+- [x] Run the 96-test revision on the Mac; the user confirmed the complete 96-test suite passed.
+- [ ] Run the 103-test suite after the seven new disk-safety tests are pulled; those additions have not yet been executed.
 - [ ] Validate live-worker pause/resume/stop and real authorized-stream recovery behavior.
 - [ ] Validate visual scoring against representative GTA V/VI clips and tune thresholds from observed false positives/negatives.
 - [ ] Exercise Windows-specific process/locking paths.
