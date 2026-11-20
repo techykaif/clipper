@@ -73,14 +73,18 @@ def _service_update(jd: Path, state=None, message=None, terminal=False):
 
 
 def _register_service(jd: Path, info, state="starting"):
+    """Register telemetry best-effort; the live capture lifecycle must not depend on it."""
     job = read_json(Path(jd) / "job.json", {}) or {}
-    return services.register(
-        _service_id(jd), "live-worker", Path(jd).name,
-        info["pid"], info["create_time"], state=state,
-        message="Live watcher starting" if state == "starting" else "",
-        metadata={"platform": job.get("platform", ""), "source_id": job.get("id", "")},
-        jobs_dir=JOBS,
-    )
+    try:
+        return services.register(
+            _service_id(jd), "live-worker", Path(jd).name,
+            info["pid"], info["create_time"], state=state,
+            message="Live watcher starting" if state == "starting" else "",
+            metadata={"platform": job.get("platform", ""), "source_id": job.get("id", "")},
+            jobs_dir=JOBS,
+        )
+    except Exception:
+        return None
 
 
 def _lock_owner():
