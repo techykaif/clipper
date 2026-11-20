@@ -1,6 +1,7 @@
 import io
 import json
 import tempfile
+import threading
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
@@ -166,6 +167,27 @@ class RenderQueueTests(unittest.TestCase):
             self.assertEqual(state["state"], "failed")
             self.assertIn("Remotion render failed", state["error"])
             self.assertEqual(list(cd.glob("*.rendering.mp4")), [])
+
+    def test_render_watchdog_terminates_a_hung_renderer(self):
+        released = threading.Event()
+
+        class HungProcess:
+            pid = 123456789
+            stdout = object()
+            def wait(self):
+                return -15
+
+        def blocked_lines(_stream):
+            released.wait(1)
+            yield "renderer stopped"
+
+        with patch.object(render.subprocess, "Popen", return_value=HungProcess()), \\
+             patch.object(render, "_lines", side_effect=blocked_lines), \\
+             patch.object(render, "_stop_render_process", side_effect=lambda _proc: released.set()) as stop, \\
+             patch.object(render, "RENDER_WALL_TIMEOUT_S", 0.01):
+            with self.assertRaisesRegex(TimeoutError, "exceeded the 0-second render limit"):
+                render._run_remotion(["npx", "remotion"], lambda *_: None, [])
+        stop.assert_called_once()
 
     def test_interrupted_running_manifest_is_recorded_as_recovery_attempt(self):
         with tempfile.TemporaryDirectory() as folder:
