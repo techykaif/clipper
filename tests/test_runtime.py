@@ -136,12 +136,53 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
                 child.pid = os.getpid()
                 with patch.object(live.subprocess, "Popen", return_value=child):
                     self.assertEqual(live.start_process(first), os.getpid())
+                    launch_state = json.loads((first / "live.json").read_text(encoding="utf-8"))
+                    self.assertFalse(launch_state["ready"])
                     adopted = live._claim_live_slot(first.name)
                     self.assertEqual(adopted["job"], first.name)
                     with self.assertRaises(RuntimeError):
                         live.start_process(second)
                     live._release_live_slot(adopted)
                     self.assertFalse((jobs / ".live-worker.lock").exists())
+
+    def test_prepare_worker_finalizes_stop_before_starting_capture(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "live-test"
+            jd.mkdir()
+            stop_file = jd / "stop"
+            stop_file.touch()
+            (jd / "live.json").write_text(json.dumps({"pid": os.getpid(), "ready": False}), encoding="utf-8")
+            owner = {"pid": os.getpid(), "job": jd.name,
+                     "create_time": psutil.Process(os.getpid()).create_time()}
+            lock = jobs / ".live-worker.lock"
+            lock.write_text(json.dumps(owner), encoding="utf-8")
+            with patch.object(live, "JOBS", jobs), patch.object(live, "LIVE_LOCK", lock), \
+                 patch.object(live, "set_status") as status:
+                result = live._prepare_live_worker(jd, owner, threading.Event())
+            self.assertFalse(result)
+            state = json.loads((jd / "live.json").read_text(encoding="utf-8"))
+            self.assertTrue(state["ended"])
+            self.assertFalse(state["ready"])
+            self.assertFalse(lock.exists())
+            status.assert_called_once()
+
+    def test_prepare_worker_publishes_ready_when_no_stop_is_pending(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "live-test"
+            jd.mkdir()
+            (jd / "live.json").write_text(json.dumps({"pid": os.getpid(), "ready": False}), encoding="utf-8")
+            owner = {"pid": os.getpid(), "job": jd.name,
+                     "create_time": psutil.Process(os.getpid()).create_time()}
+            lock = jobs / ".live-worker.lock"
+            lock.write_text(json.dumps(owner), encoding="utf-8")
+            with patch.object(live, "JOBS", jobs), patch.object(live, "LIVE_LOCK", lock):
+                result = live._prepare_live_worker(jd, owner, threading.Event())
+            self.assertTrue(result)
+            state = json.loads((jd / "live.json").read_text(encoding="utf-8"))
+            self.assertTrue(state["ready"])
+            self.assertFalse(state.get("ended", False))
 
     def test_stop_marker_is_written_even_when_resume_fails(self):
         with tempfile.TemporaryDirectory() as folder:
