@@ -6,7 +6,7 @@ import time
 import psutil
 
 from . import services
-from .common import JOBS, ROOT, read_json
+from .common import JOBS, ROOT, read_json, set_status
 
 STALE_AFTER_S = 180
 
@@ -62,19 +62,56 @@ def _job_snapshot(jd):
     }
 
 
+def _recover_crashed_analysis(record):
+    job_key = str(record.get("job_key") or "")
+    if not job_key or Path(job_key).name != job_key or job_key in (".", ".."):
+        return False
+    jd = JOBS / job_key
+    job = read_json(jd / "job.json", {}) or {}
+    if job.get("runtime_service_id") != record.get("id") or job.get("live") is True:
+        return False
+    try:
+        pid, created = int(record.get("pid")), float(record.get("create_time"))
+    except (TypeError, ValueError):
+        return False
+    status = read_json(jd / "status.json", {}) or {}
+    note = (
+        "The Clipper process exited before this analysis completed. Existing chat, metadata, clips and "
+        "downloaded media were preserved where possible. Run Find clips again to retry the analysis."
+    )
+    if status.get("stage") not in ("done", "error"):
+        set_status(jd, "error", status.get("pct", 0), status.get("msg", ""), note)
+    services.annotate_recovery(str(record.get("id") or ""), pid, created, note, jobs_dir=JOBS)
+    return True
+
+
+def _recover_crashed_services(service_data):
+    for record in service_data.get("services", {}).values():
+        if record.get("state") != "crashed" or record.get("recovered_at"):
+            continue
+        job_key = str(record.get("job_key") or "")
+        if not job_key or Path(job_key).name != job_key or job_key in (".", ".."):
+            continue
+        try:
+            if record.get("type") == "live-worker":
+                from . import live
+                live.recover_crashed_worker(JOBS / job_key, record)
+            elif record.get("type") == "render":
+                from . import render
+                render.recover_crashed_render(record, jobs_dir=JOBS)
+            elif record.get("type") == "analysis":
+                _recover_crashed_analysis(record)
+        except Exception:
+            # One damaged job must not prevent the rest of the dashboard from loading.
+            continue
+
+
 def snapshot():
     # Reconcile process identities before reading jobs. Only a positively dead/reused PID
     # can trigger recovery; stale or inaccessible processes are surfaced, never killed.
     try:
         service_data = services.snapshot(jobs_dir=JOBS)
-        for record in service_data["services"].values():
-            if record.get("type") == "live-worker" and record.get("state") == "crashed" \
-                    and not record.get("recovered_at"):
-                try:
-                    from . import live
-                    live.recover_crashed_worker(JOBS / str(record.get("job_key") or ""), record)
-                except (OSError, ValueError, TypeError):
-                    pass
+        _recover_crashed_services(service_data)
     except Exception as exc:
         service_data = {
             "services": {},
