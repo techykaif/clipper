@@ -8,11 +8,41 @@ import psutil
 from pathlib import Path
 from unittest.mock import Mock, patch, call
 
-from clipper import live
+from clipper import live, runtime
 from clipper.runtime import classify_job_state
 
 
 class RuntimeStateClassificationTests(unittest.TestCase):
+    def test_job_snapshot_marks_missing_required_heartbeat_stale(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "job.json").write_text(json.dumps({"live": True}), encoding="utf-8")
+            (jd / "status.json").write_text(json.dumps({"stage": "live", "msg": "Watching"}), encoding="utf-8")
+            (jd / "live.json").write_text(json.dumps({
+                "pid": 1234, "heartbeat_enabled": True, "ended": False
+            }), encoding="utf-8")
+            with patch.object(live, "running", return_value=True), patch.object(live, "paused", return_value=False):
+                snapshot = runtime._job_snapshot(jd)
+            self.assertEqual(snapshot["state"], "STALE")
+
+    def test_job_snapshot_keeps_legacy_live_worker_status_fallback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "job.json").write_text(json.dumps({"live": True}), encoding="utf-8")
+            (jd / "status.json").write_text(json.dumps({"stage": "live", "msg": "Watching"}), encoding="utf-8")
+            (jd / "live.json").write_text(json.dumps({"pid": 1234, "ended": False}), encoding="utf-8")
+            with patch.object(live, "running", return_value=True), patch.object(live, "paused", return_value=False):
+                snapshot = runtime._job_snapshot(jd)
+            self.assertEqual(snapshot["state"], "RUNNING")
+
+    def test_string_false_is_not_treated_as_live(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "job.json").write_text(json.dumps({"live": "false"}), encoding="utf-8")
+            (jd / "status.json").write_text(json.dumps({"stage": "download", "msg": "Working"}), encoding="utf-8")
+            snapshot = runtime._job_snapshot(jd)
+            self.assertEqual(snapshot["state"], "RUNNING")
+
     def test_live_process_is_running(self):
         self.assertEqual(classify_job_state("live", True, process_alive=True, age_s=20), "RUNNING")
 
