@@ -44,6 +44,8 @@ def main():
     lv.add_argument("--min-score", type=int, default=85)
     lr = sub.add_parser("live-run")
     lr.add_argument("key")
+    rs = sub.add_parser("resume", help="safely resume an interrupted live session from its saved buffer")
+    rs.add_argument("key")
     st = sub.add_parser("stop")
     st.add_argument("key")
     sub.add_parser("stt-download")
@@ -109,6 +111,11 @@ def main():
     elif args.cmd == "live-run":
         from . import live
         live.run(args.key)
+    elif args.cmd == "resume":
+        from . import live, runtime
+        runtime.snapshot()
+        pid = live.start_process(JOBS / args.key, resume=True)
+        print(f"Resuming {args.key} from its saved wall-clock buffer (worker PID {pid}).")
     elif args.cmd == "stop":
         from . import live
         live.stop(JOBS / args.key)
