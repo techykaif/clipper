@@ -34,9 +34,10 @@ def _job_snapshot(jd):
     status = read_json(jd / "status.json", {}) or {}
     live_info = read_json(jd / "live.json", {}) or {}
     status_path = jd / "status.json"
-    is_live = bool(job.get("live"))
+    is_live = job.get("live") is True
     heartbeat_path = jd / "heartbeat"
-    freshness_path = heartbeat_path if is_live and heartbeat_path.exists() else status_path
+    heartbeat_required = is_live and live_info.get("heartbeat_enabled") is True
+    freshness_path = heartbeat_path if heartbeat_required else status_path
     age = max(0.0, time.time() - freshness_path.stat().st_mtime) if freshness_path.exists() else None
     alive = False
     is_paused = False
