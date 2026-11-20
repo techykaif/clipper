@@ -531,5 +531,28 @@ class YouTubeRecorderRecoveryPolicyTests(unittest.TestCase):
                                                *live.RECONNECT_DELAYS])
 
 
+class RuntimeCandidateCountTests(unittest.TestCase):
+    def test_candidate_count_uses_queue_when_present(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "job.json").write_text(json.dumps({"live": False}), encoding="utf-8")
+            (jd / "status.json").write_text(json.dumps({"stage": "done"}), encoding="utf-8")
+            (jd / "clips.json").write_text(json.dumps({"clips": [{"id": 1}]}), encoding="utf-8")
+            (jd / "candidates.json").write_text(json.dumps({"items": [{"id": i} for i in range(4)]}),
+                                                encoding="utf-8")
+            snapshot = runtime._job_snapshot(jd)
+            self.assertEqual(snapshot["candidate_count"], 4)
+
+    def test_legacy_job_without_queue_counts_existing_clips(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "job.json").write_text(json.dumps({"live": False}), encoding="utf-8")
+            (jd / "status.json").write_text(json.dumps({"stage": "done"}), encoding="utf-8")
+            (jd / "clips.json").write_text(json.dumps({"clips": [{"id": 1}, {"id": 2}]}),
+                                           encoding="utf-8")
+            snapshot = runtime._job_snapshot(jd)
+            self.assertEqual(snapshot["candidate_count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
