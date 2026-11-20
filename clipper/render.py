@@ -634,7 +634,10 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
         service_heartbeat_thread = threading.Thread(
             target=keep_render_service_alive, name="clipper-render-service-heartbeat", daemon=True,
         )
-        service_heartbeat_thread.start()
+        try:
+            service_heartbeat_thread.start()
+        except RuntimeError:
+            service_heartbeat_thread = None
 
     try:
         with _render_guard(report_progress):
