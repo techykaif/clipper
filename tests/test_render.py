@@ -74,6 +74,16 @@ class RenderOutputValidationTests(unittest.TestCase):
                 render.validate_render_output(path, 12.0, 30.0, probe=self.probe)
 
 
+class EffectValueValidationTests(unittest.TestCase):
+    def test_rejects_infinite_numeric_effect_values(self):
+        with self.assertRaisesRegex(render.FxError, "must be finite"):
+            render._num({"strength": float("inf")}, "strength", 1, 0, 80, "shakes[0]")
+
+    def test_rejects_nan_numeric_effect_values(self):
+        with self.assertRaisesRegex(render.FxError, "must be finite"):
+            render._num({"strength": float("nan")}, "strength", 1, 0, 80, "shakes[0]")
+
+
 class RenderQueueTests(unittest.TestCase):
     def test_second_process_waits_for_the_global_render_lock(self):
         with tempfile.TemporaryDirectory() as folder:
