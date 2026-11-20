@@ -88,6 +88,8 @@ def _recover_crashed_analysis(record):
 
 def _recover_crashed_services(service_data):
     for record in service_data.get("services", {}).values():
+        if not isinstance(record, dict):
+            continue
         if record.get("state") != "crashed" or record.get("recovered_at"):
             continue
         job_key = str(record.get("job_key") or "")
