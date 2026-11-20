@@ -190,14 +190,18 @@ def snapshot():
 def html_panel():
     data = snapshot()
     active, stale, errors = data["active"], data["stale"], data["errors"]
-    is_paused = any(j["state"] == "PAUSED" for j in active)
-    health = "Attention needed" if stale or errors else ("Paused" if is_paused and len(active) == 1 else ("Running" if active else "Idle"))
-    tone = "np-err" if stale or errors else ("np-ok" if active else "")
     service_counts = data.get("service_counts") or {}
+    service_attention = bool(service_counts.get("attention") or service_counts.get("error"))
+    is_paused = any(j["state"] == "PAUSED" for j in active)
+    needs_attention = bool(stale or errors or service_attention)
+    health = "Attention needed" if needs_attention else ("Paused" if is_paused and len(active) == 1 else ("Running" if active else "Idle"))
+    tone = "np-err" if needs_attention else ("np-ok" if active else "")
     service_text = (
         f"{service_counts.get('active', 0)} active · {service_counts.get('stale', 0)} stale · "
         f"{service_counts.get('crashed', 0)} crashed · {service_counts.get('unverified', 0)} unverified"
     )
+    if service_counts.get("failed"):
+        service_text += f" · {service_counts.get('failed', 0)} failed"
     if service_counts.get("error"):
         service_text = "Registry unavailable"
     cells = [
