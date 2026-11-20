@@ -159,16 +159,20 @@ def _slot_guard():
 
 
 def _claim_live_slot(key):
-    """Atomically claim the one-live-source slot across dashboard and CLI processes."""
+    """Claim the slot, or adopt the exact reservation created for this watcher by start_process()."""
     JOBS.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "pid": os.getpid(),
-        "create_time": psutil.Process(os.getpid()).create_time(),
-        "job": str(key),
-        "started": time.time(),
-    }
+    current_pid = os.getpid()
+    current_created = psutil.Process(current_pid).create_time()
     with _slot_guard():
-        _assert_live_slot_available(key)
+        if LIVE_LOCK.exists():
+            owner = _lock_owner()
+            if (owner and owner.get("pid") == current_pid and owner.get("job") == str(key)
+                    and owner.get("create_time") is not None
+                    and abs(float(owner["create_time"]) - current_created) <= 2.0):
+                return owner
+        _assert_live_slot_available()
+        payload = {"pid": current_pid, "create_time": current_created,
+                   "job": str(key), "started": time.time()}
         try:
             fd = os.open(str(LIVE_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError as exc:
@@ -261,23 +265,40 @@ def new_job(target, hours=6.0, top_n=30, basis=("chat",), keywords="", min_score
 
 
 def start_process(jd: Path):
-    """Run the watcher detached, so it keeps going if the dashboard restarts."""
-    with _slot_guard():
-        _assert_live_slot_available(jd.name)
+    """Launch the detached watcher and reserve its slot before another launcher can race it."""
     import sys
-    log = open(jd / "live.log", "a")
-    # Windows: own process group and a hidden console (its yt-dlp and ffmpeg children share it, so no windows pop up)
+
+    process = None
+    owner = None
     detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == "nt"
               else {"start_new_session": True})
-    p = subprocess.Popen([sys.executable, "-m", "clipper", "live-run", jd.name], cwd=Path(__file__).resolve().parents[1],
-                         stdout=log, stderr=subprocess.STDOUT, **detach)
     try:
-        created = psutil.Process(p.pid).create_time()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        created = None
-    write_json(jd / "live.json", {"pid": p.pid, "started": time.time(),
-                                  "create_time": created, "paused": False})
-    return p.pid
+        with _slot_guard():
+            _assert_live_slot_available()
+            with (jd / "live.log").open("a", encoding="utf-8") as log:
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "clipper", "live-run", jd.name],
+                    cwd=Path(__file__).resolve().parents[1],
+                    stdout=log, stderr=subprocess.STDOUT, **detach,
+                )
+            try:
+                created = psutil.Process(process.pid).create_time()
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+                raise RuntimeError("Could not verify the newly launched live worker process.") from exc
+            owner = {"pid": int(process.pid), "create_time": created, "job": jd.name, "started": time.time()}
+            fd = os.open(str(LIVE_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                json.dump(owner, out)
+                out.flush()
+                os.fsync(out.fileno())
+            write_json(jd / "live.json", {**owner, "paused": False, "pause_state": "running"})
+        return int(process.pid)
+    except Exception:
+        if owner is not None:
+            _release_live_slot(owner)
+        if process is not None:
+            Recorder._stop_process(process)
+        raise
 
 
 def running(jd: Path) -> bool:
@@ -290,16 +311,18 @@ def running(jd: Path) -> bool:
         if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
             return False
         expected = info.get("create_time")
-        if expected is not None and abs(proc.create_time() - float(expected)) > 2.0:
+        if expected is None or abs(proc.create_time() - float(expected)) > 2.0:
             return False
         return True
     except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
-        return _alive(int(pid))
+        return False
 
 
 def paused(jd: Path) -> bool:
     info = read_json(jd / "live.json", {}) or {}
-    return bool(info.get("paused")) and running(jd)
+    state = info.get("pause_state")
+    is_paused = state == "paused" if state is not None else bool(info.get("paused"))
+    return is_paused and running(jd)
 
 
 def _verified_worker(jd: Path):
@@ -317,17 +340,21 @@ def _verified_worker(jd: Path):
     return proc, info
 
 
-def pause(jd: Path):
-    """Suspend the verified watcher and its media/chat process tree."""
-    if paused(jd):
-        return False
+def _pause_state(info):
+    return info.get("pause_state") or ("paused" if info.get("paused") else "running")
+
+
+def _pause_locked(jd: Path):
+    if (jd / "stop").exists():
+        raise RuntimeError("This live job is already stopping; it cannot be paused.")
     root, info = _verified_worker(jd)
-    # Persist intent before suspending any process: a dashboard crash mid-pause can still be resumed.
-    write_json(jd / "live.json", {**info, "paused": True, "pause_requested_at": time.time()})
-    children = root.children(recursive=True)
+    if _pause_state(info) == "paused":
+        return False
+    write_json(jd / "live.json", {**info, "paused": False, "pause_state": "requested",
+                                  "pause_requested_at": time.time()})
     suspended = []
     try:
-        for child in reversed(children):
+        for child in reversed(root.children(recursive=True)):
             try:
                 child.suspend()
                 suspended.append(child)
@@ -344,19 +371,25 @@ def pause(jd: Path):
                 pass
             except psutil.AccessDenied as rollback_exc:
                 rollback_errors.append(str(rollback_exc))
-        if not rollback_errors:
-            write_json(jd / "live.json", {**info, "paused": False})
+        state = "requested" if rollback_errors else "running"
+        write_json(jd / "live.json", {**info, "paused": False, "pause_state": state})
         raise RuntimeError(
             f"Could not safely pause the live worker tree: {exc}"
-            + (f"; rollback was incomplete: {rollback_errors[:2]}" if rollback_errors else "")
+            + (f"; pause recovery is required: {rollback_errors[:2]}" if rollback_errors else "")
         ) from exc
-    write_json(jd / "live.json", {**info, "paused": True, "paused_at": time.time()})
+    write_json(jd / "live.json", {**info, "paused": True, "pause_state": "paused",
+                                  "paused_at": time.time()})
     return True
 
 
-def resume(jd: Path):
-    """Resume media/chat children before the watcher."""
-    if not paused(jd):
+def pause(jd: Path):
+    with _slot_guard():
+        return _pause_locked(jd)
+
+
+def _resume_locked(jd: Path):
+    info = read_json(jd / "live.json", {}) or {}
+    if _pause_state(info) == "running":
         return False
     root, info = _verified_worker(jd)
     errors = []
@@ -369,12 +402,20 @@ def resume(jd: Path):
             errors.append(str(exc))
     try:
         root.resume()
-    except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+    except psutil.NoSuchProcess:
+        pass
+    except psutil.AccessDenied as exc:
         errors.append(str(exc))
     if errors:
         raise RuntimeError("Could not resume every process in the live worker tree: " + "; ".join(errors[:3]))
-    write_json(jd / "live.json", {**info, "paused": False, "resumed_at": time.time()})
+    write_json(jd / "live.json", {**info, "paused": False, "pause_state": "running",
+                                  "resumed_at": time.time()})
     return True
+
+
+def resume(jd: Path):
+    with _slot_guard():
+        return _resume_locked(jd)
 
 
 def _alive(pid: int) -> bool:
@@ -396,18 +437,31 @@ def _alive(pid: int) -> bool:
 
 
 def stop(jd: Path):
-    # A suspended watcher cannot process its stop file or SIGTERM.
-    if paused(jd):
-        resume(jd)
     (jd / "stop").touch()
+    resume_error = None
+    try:
+        with _slot_guard():
+            info = read_json(jd / "live.json", {}) or {}
+            if _pause_state(info) in ("requested", "paused"):
+                _resume_locked(jd)
+    except Exception as exc:
+        resume_error = exc
     info = read_json(jd / "live.json", {}) or {}
-    # Windows has no SIGTERM (os.kill would hard-kill and orphan yt-dlp/ffmpeg): the watcher sees the stop file
-    # within CHECK_S seconds and shuts down cleanly.
-    if info.get("pid") and os.name != "nt":
+    pid = info.get("pid")
+    if pid and os.name != "nt":
         try:
-            os.kill(info["pid"], signal.SIGTERM)
+            os.killpg(int(pid), signal.SIGCONT)
         except OSError:
             pass
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except OSError:
+            pass
+    if resume_error:
+        raise RuntimeError(
+            f"Stop was requested and a termination signal was sent, but the paused worker tree "
+            f"could not be fully resumed: {resume_error}"
+        ) from resume_error
 
 
 # ---------------- chat readers ----------------
@@ -418,13 +472,40 @@ class Chat:
     def add(self, wall, user, text):
         t = wall - self.t0
         if t < 0:
-            return                      # history from before we started watching
+            return
         with self.lock:
             self.msgs.append({"t": round(t, 2), "user": user, "text": text})
 
     def snapshot(self):
         with self.lock:
             return sorted(self.msgs, key=lambda m: m["t"])
+
+
+def _chat_reader_entry(target, args, chat: Chat, stop_evt):
+    try:
+        target(*args)
+    except Exception as exc:
+        with chat.lock:
+            chat.error = f"Chat reader failed: {type(exc).__name__}: {exc}"
+    finally:
+        if not stop_evt.is_set():
+            with chat.lock:
+                chat.alive = False
+                if not chat.error:
+                    chat.error = "Chat reader stopped unexpectedly"
+
+
+def _heartbeat_loop(jd: Path, stop_evt):
+    heartbeat = jd / "heartbeat"
+    try:
+        heartbeat.touch()
+    except OSError:
+        pass
+    while not stop_evt.wait(15):
+        try:
+            heartbeat.touch()
+        except OSError:
+            pass
 
 
 def twitch_chat(channel, chat: Chat, stop_evt):
@@ -744,19 +825,20 @@ def run(key):
     jd = JOBS / key
     job = read_json(jd / "job.json")
     meta = read_json(jd / "meta.json", {}) or {}
-    (jd / "stop").unlink(missing_ok=True)
     t0 = time.time()
     stop_evt = threading.Event()
     signal.signal(signal.SIGTERM, lambda *a: stop_evt.set())
     chat = Chat(t0)
     if job["platform"] == "twitch":
-        reader = threading.Thread(target=twitch_chat, args=(job["id"], chat, stop_evt), daemon=True)
+        reader_target, reader_args = twitch_chat, (job["id"], chat, stop_evt)
     elif job["platform"] == "kick":
         from .chat import kick
-        reader = threading.Thread(target=kick.live, args=(job["id"], chat.add, stop_evt,
-                                                          lambda e: setattr(chat, "error", e)), daemon=True)
+        reader_target, reader_args = kick.live, (job["id"], chat.add, stop_evt,
+                                                  lambda e: setattr(chat, "error", e))
     else:
-        reader = threading.Thread(target=youtube_chat, args=(job["url"], jd, chat, stop_evt), daemon=True)
+        reader_target, reader_args = youtube_chat, (job["url"], jd, chat, stop_evt)
+    reader = threading.Thread(target=_chat_reader_entry, args=(reader_target, reader_args, chat, stop_evt),
+                              daemon=True)
     try:
         slot_owner = _claim_live_slot(key)
     except RuntimeError as exc:
@@ -770,7 +852,7 @@ def run(key):
     except Exception as exc:
         stop_evt.set()
         if reader.is_alive():
-            reader.join(timeout=5)
+            reader.join(timeout=15)
         if rec is not None:
             rec.close()
         _release_live_slot(slot_owner)
@@ -788,12 +870,19 @@ def run(key):
     except Exception as exc:
         stop_evt.set()
         rec.close()
+        if reader.is_alive():
+            reader.join(timeout=15)
+        if reader.is_alive():
+            chat.error = "Chat reader did not stop after worker-state persistence failed."
         _release_live_slot(slot_owner)
         set_status(jd, "error", 0, "", f"Could not persist live worker state: {exc}")
         raise
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, args=(jd, heartbeat_stop), daemon=True)
+    heartbeat_thread.start()
     try:
         while True:
-            if stop_evt.wait(CHECK_S) or (jd / "stop").exists():
+            if (jd / "stop").exists() or stop_evt.wait(CHECK_S):
                 why_stop = "Stopped"
                 break
             if time.time() > deadline:
@@ -869,10 +958,17 @@ def run(key):
                                       + (f". {chat.error}" if chat.error else ""))
     finally:
         stop_evt.set()
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
         if rec is not None:
             rec.close()
+        if reader.is_alive():
+            reader.join(timeout=15)
+        if reader.is_alive():
+            chat.error = (chat.error + "; " if chat.error else "") + "Chat reader did not stop within 15 seconds."
+        chat.alive = False
         msgs = chat.snapshot()
-        _publish(jd, meta, job, msgs, time.time() - t0, clips, "", scan)
+        _publish(jd, meta, job, msgs, time.time() - t0, clips, chat.error, scan)
         for f in (jd / "buffer").glob("*"):
             f.unlink(missing_ok=True)
         try:
@@ -882,7 +978,7 @@ def run(key):
         for f in jd.glob("yt_live*"):
             f.unlink(missing_ok=True)
         info = read_json(jd / "live.json", {}) or {}
-        write_json(jd / "live.json", {**info, "ended": time.time()})
+        write_json(jd / "live.json", {**info, "ended": time.time(), "paused": False, "pause_state": "stopped"})
         n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
         set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
         _release_live_slot(slot_owner)
