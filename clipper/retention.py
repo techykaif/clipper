@@ -112,3 +112,12 @@ def apply_cleanup(plan, *, tmp_dir=None, jobs_dir=None):
     return {"deleted": deleted, "skipped": skipped,
             "bytes": sum(int(item.get("size") or 0) for item in (plan or {}).get("items", [])
                          if str(item.get("path")) in deleted)}
+
+
+def human_bytes(value):
+    number = float(max(0, int(value or 0)))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if number < 1024 or unit == "TB":
+            return f"{number:.0f} {unit}" if unit == "B" else f"{number:.1f} {unit}"
+        number /= 1024
+    return f"{number:.1f} TB"
