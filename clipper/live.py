@@ -12,6 +12,7 @@ the stream ends. Kick live chat comes from Kick's realtime service with an anony
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -21,7 +22,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import ai_review, library, signals, spikes
+from . import ai_review, candidates, library, signals, spikes
 from .common import JOBS, fmt_t, read_json, set_status, video_info, write_json
 
 BUFFER_S = 600          # seconds of video kept on disk
@@ -974,7 +975,12 @@ def run(key):
         raise
 
     deadline = t0 + float(job.get("hours") or 6) * 3600
-    clips, why_stop = [], "Stopped"
+    previous = read_json(jd / "clips.json", {}) or {}
+    clips = list(previous.get("clips", []) or [])
+    first_id = max((int(c.get("id") or 0) for c in clips), default=0) + 1
+    candidate_queue = candidates.CandidateQueue(jd, first_id=first_id)
+    candidate_queue.seed(clips)
+    why_stop = "Stopped"
     basis = job.get("basis") or ["chat"]
     listen = "audio" in basis or "speech" in basis
     scan, heard = None, set()
@@ -1034,39 +1040,66 @@ def run(key):
             res = signals.find(basis, elapsed, msgs=msgs, db=scan.db if scan else None,
                                words=scan.words if scan else None, keywords=job.get("keywords", ""), top_n=200,
                                min_score=job.get("min_score", 0))
-            for c in sorted(res["clips"], key=lambda c: c["chat_peak"]):
-                at = c.get("peak", c["chat_peak"])
-                if any(abs(at - k.get("peak", k["chat_peak"])) < spikes.DEDUPE for k in clips):
-                    continue
-                if c["end"] + SETTLE_S > elapsed:
-                    continue                                   # chat hasn't calmed down yet, or not recorded yet
-                if c["start"] < elapsed - BUFFER_S + 30:
-                    continue                                   # already gone from the buffer
-                c["id"] = len(clips) + 1
+            eligible = [
+                c for c in res.get("clips", [])
+                if c["end"] + SETTLE_S <= elapsed and c["start"] >= elapsed - BUFFER_S + 30
+            ]
+            new_candidates = candidate_queue.discover(
+                eligible, dedupe_window=spikes.DEDUPE, minimum_score=job.get("min_score", 0)
+            )
+            for c in new_candidates:
                 c["vod_time"] = fmt_t(c["start"])
                 c["what"], c["why"] = "", ""
+                candidate_queue.mark(c["id"], "processing")
                 cd = jd / "clips" / str(c["id"])
                 cd.mkdir(parents=True, exist_ok=True)
-                set_status(jd, "live", 0, f"Cutting clip {c['id']} (chat hit {c['multiple']}× at {c['vod_time']})")
+                set_status(jd, "live", 0, f"Cutting candidate {c['id']} (signal score {c['score']} at {c['vod_time']})")
                 try:
                     src = rec.cut(t0 + c["start"], t0 + c["end"], cd / "source.mp4")
                     info = video_info(src)
+                    visual = candidates.inspect_video(src)
+                    c.update(candidates.apply_visual_quality(c, visual))
+                    candidate_queue.mark(
+                        c["id"], "processing", score=c["score"], signal_score=c.get("signal_score"),
+                        quality_adjustment=c.get("quality_adjustment", 0),
+                        quality_flags=c.get("quality_flags", []), visual_quality=visual,
+                        auto_reason=c.get("auto_reason", ""),
+                    )
+                    if c["score"] < int(job.get("min_score", 0)):
+                        candidate_queue.mark(
+                            c["id"], "filtered", score=c["score"], signal_score=c.get("signal_score"),
+                            quality_adjustment=c.get("quality_adjustment", 0),
+                            quality_flags=c.get("quality_flags", []), visual_quality=visual,
+                            filtered_reason=f"Visual quality adjustment lowered the score below {job.get('min_score')}.",
+                        )
+                        shutil.rmtree(cd, ignore_errors=True)
+                        continue
                     c["end"] = round(c["start"] + info["duration"], 2)
-                    prepare_clip(cd, c, src, info)
+                    prepare_clip(cd, c, src, info, visual_quality=visual)
                     if job.get("antigravity_review"):
-                        set_status(jd, "review", 0, f"Antigravity reviewing clip {c['id']}")
+                        set_status(jd, "review", 0, f"Antigravity reviewing candidate {c['id']}")
                         c["review"] = ai_review.review_clip(jd, c)
                         if c["review"].get("status") == "reviewed" and c["review"].get("verdict") == "REJECT":
                             library.discard_rejected_clip(jd.name, c["id"])
+                            candidate_queue.mark(c["id"], "rejected", review_verdict="REJECT",
+                                                 score=c["score"], quality_flags=c.get("quality_flags", []))
                             clips.append({**c, "rejected": True})  # retain for deduplication; never republish
                         else:
+                            state = ("needs_review" if c["review"].get("verdict") == "REVIEW"
+                                     or c["review"].get("status") == "needs_review" else "ready")
+                            candidate_queue.mark(c["id"], state, review_verdict=c["review"].get("verdict"),
+                                                 score=c["score"], quality_flags=c.get("quality_flags", []))
                             clips.append(c)
                     else:
+                        candidate_queue.mark(c["id"], "ready", score=c["score"],
+                                             quality_flags=c.get("quality_flags", []))
                         clips.append(c)
                 except Exception as e:
-                    (cd / "error.log").write_text(str(e))
-                    clips.append({**c, "failed": str(e)})
-                _publish(jd, meta, job, msgs, elapsed, clips, chat.error, scan)
+                    error = str(e)[:1000]
+                    (cd / "error.log").write_text(error, encoding="utf-8")
+                    candidate_queue.mark(c["id"], "failed", error=error)
+                    clips.append({**c, "failed": error})
+                _publish(jd, meta, job, msgs, elapsed, clips, chat.error, scan, candidate_queue)
             rec.prune(t0 + elapsed - BUFFER_S)
             n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
             set_status(jd, "live", 0, f"Watching for {fmt_t(elapsed)}. {n} clip{'' if n == 1 else 's'} so far"
@@ -1115,7 +1148,7 @@ def run(key):
             _release_live_slot(slot_owner)
 
 
-def _publish(jd, meta, job, msgs, elapsed, clips, note, scan=None):
+def _publish(jd, meta, job, msgs, elapsed, clips, note, scan=None, candidate_queue=None):
     """Chart, ranked list and chat for the dashboard. Keeps notes /clip wrote."""
     write_json(jd / "chat.json", msgs)
     if scan is not None:
@@ -1139,4 +1172,5 @@ def _publish(jd, meta, job, msgs, elapsed, clips, note, scan=None):
                                    "title": meta.get("title"), "channel": meta.get("channel"), "duration": round(elapsed),
                                    "messages": len(msgs), "avg_per_min": round(avg * 60 / spikes.BIN, 2),
                                    "bin": spikes.BIN, "basis": job.get("basis") or ["chat"],
-                                   "min_score": job.get("min_score", 0), "clips": good})
+                                   "min_score": job.get("min_score", 0), "clips": good,
+                                   "candidate_queue": candidate_queue.counts() if candidate_queue is not None else {}})
