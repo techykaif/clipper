@@ -622,6 +622,20 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
                 pass
         progress(pct, message)
 
+    service_heartbeat_stop = threading.Event()
+    service_heartbeat_thread = None
+    if service_recorded:
+        def keep_render_service_alive():
+            while not service_heartbeat_stop.wait(15):
+                try:
+                    services.heartbeat(service_id, process.pid, service_created, jobs_dir=jd.parent)
+                except Exception:
+                    pass
+        service_heartbeat_thread = threading.Thread(
+            target=keep_render_service_alive, name="clipper-render-service-heartbeat", daemon=True,
+        )
+        service_heartbeat_thread.start()
+
     try:
         with _render_guard(report_progress):
             _render_state(cd, "running", attempts=attempts, started_at=time.time(), error=None,
@@ -673,6 +687,9 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
                 pass
         raise
     finally:
+        service_heartbeat_stop.set()
+        if service_heartbeat_thread is not None:
+            service_heartbeat_thread.join(timeout=2)
         temp_out.unlink(missing_ok=True)
         temp_srt.unlink(missing_ok=True)
 
