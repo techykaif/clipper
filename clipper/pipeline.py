@@ -1,12 +1,36 @@
 """analyze <url>: chat -> spikes -> download only the spike parts -> hook, words, face crop."""
+import os
 import traceback
 from pathlib import Path
 
-from . import ai_review, candidates, captions, chat, download, face, hotspot, library, render, signals, spikes, stt, subs
+import psutil
+
+from . import ai_review, candidates, captions, chat, download, face, hotspot, library, render, services, signals, spikes, stt, subs
 from .common import job_dir, read_json, set_status, write_json, fmt_t
 from .platforms import detect
 
 PLATFORM_NAME = {"twitch": "Twitch", "youtube": "YouTube", "kick": "Kick"}
+
+
+class Stopped(RuntimeError):
+    pass
+
+
+def _service_id(jd):
+    return f"analysis:{Path(jd).name}"
+
+
+def _service_identity():
+    process = psutil.Process(os.getpid())
+    return process.pid, process.create_time()
+
+
+def _service_heartbeat(jd):
+    try:
+        pid, created = _service_identity()
+        services.heartbeat(_service_id(jd), pid, created, jobs_dir=Path(jd).parent)
+    except Exception:
+        pass
 
 
 def analyze(url, top_n=10, cookies_browser=None, chat_file=None, skip_download=False, basis=("chat",), keywords="",
@@ -19,24 +43,49 @@ def analyze(url, top_n=10, cookies_browser=None, chat_file=None, skip_download=F
                                  "basis": basis, "keywords": keywords, "min_score": min_score,
                                  "antigravity_review": bool(antigravity_review)})
     (jd / "stop").unlink(missing_ok=True)
+    service_recorded = False
+    try:
+        pid, created = _service_identity()
+        services.register(
+            _service_id(jd), "analysis", jd.name, pid, created,
+            state="running", message="Analyzing past stream", jobs_dir=jd.parent,
+            metadata={"platform": platform, "source_id": vid},
+        )
+        service_recorded = True
+    except Exception:
+        # Analysis remains usable even if the optional health ledger is damaged.
+        pass
     try:
         _run(url, platform, vid, jd, top_n, cookies_browser, chat_file, skip_download, basis, keywords, min_score,
              bool(antigravity_review))
     except Exception as e:
         set_status(jd, "error", 0, "", f"{e}")
         (jd / "error.log").write_text(traceback.format_exc())
+        if service_recorded:
+            try:
+                pid, created = _service_identity()
+                services.finish(_service_id(jd), pid, created,
+                                state="stopped" if isinstance(e, Stopped) else "failed",
+                                message=str(e), jobs_dir=jd.parent)
+            except Exception:
+                pass
         raise
+    else:
+        if service_recorded:
+            try:
+                pid, created = _service_identity()
+                services.finish(_service_id(jd), pid, created, state="completed",
+                                message="Analysis completed", jobs_dir=jd.parent)
+            except Exception:
+                pass
     return jd
-
-
-class Stopped(RuntimeError):
-    pass
 
 
 def _step(jd, stage, pct, msg=""):
     """Status update + the place a Stop from the dashboard takes effect."""
     if (jd / "stop").exists():
         raise Stopped("Stopped by you.")
+    _service_heartbeat(jd)
     set_status(jd, stage, pct, msg)
 
 
