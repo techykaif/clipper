@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch, call
 
 from clipper import live, runtime
+from clipper.chat import kick
 from clipper.runtime import classify_job_state
 
 
@@ -202,6 +203,23 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
             stop_evt.set()
             live._heartbeat_loop(jd, stop_evt)
             self.assertTrue((jd / "heartbeat").is_file())
+
+
+class KickLiveStopTests(unittest.TestCase):
+    def test_live_stops_before_channel_lookup_when_requested(self):
+        stop_evt = threading.Event()
+        stop_evt.set()
+        with patch.object(kick, "channel") as channel_lookup:
+            kick.live("testchannel", lambda *_: None, stop_evt)
+        channel_lookup.assert_not_called()
+
+    def test_request_does_not_start_when_stop_is_already_set(self):
+        stop_evt = threading.Event()
+        stop_evt.set()
+        with patch.object(kick.urllib.request, "urlopen") as urlopen:
+            with self.assertRaises(kick.KickStopped):
+                kick._req("GET", "https://example.invalid", stop_evt=stop_evt)
+        urlopen.assert_not_called()
 
 
 class YouTubeLiveChatReconnectTests(unittest.TestCase):
