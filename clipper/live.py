@@ -330,6 +330,16 @@ def paused(jd: Path) -> bool:
     return is_paused and running(jd)
 
 
+def _matches_worker_command(command, jd: Path) -> bool:
+    """Recognize both detached dashboard workers and the documented foreground CLI mode."""
+    if "live-run" in command and jd.name in command:
+        return True
+    job = read_json(jd / "job.json", {}) or {}
+    source_id = str(job.get("id") or "")
+    return bool("live" in command and source_id
+                and any(source_id in str(part) for part in command))
+
+
 def _verified_worker(jd: Path):
     info = read_json(jd / "live.json", {}) or {}
     pid = info.get("pid")
@@ -337,10 +347,10 @@ def _verified_worker(jd: Path):
         raise RuntimeError("The live worker is not running.")
     proc = psutil.Process(int(pid))
     expected = info.get("create_time")
-    if expected is not None and abs(proc.create_time() - float(expected)) > 2.0:
+    if expected is None or abs(proc.create_time() - float(expected)) > 2.0:
         raise RuntimeError("The saved worker PID no longer matches this Clipper job.")
     command = proc.cmdline()
-    if "live-run" not in command or jd.name not in command:
+    if not _matches_worker_command(command, jd):
         raise RuntimeError("Refusing to control a process that does not match this Clipper job.")
     return proc, info
 
