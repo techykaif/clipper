@@ -601,12 +601,13 @@ def stop(jd: Path):
     with _slot_guard():
         (jd / "stop").touch()
         info = read_json(jd / "live.json", {}) or {}
-        _service_update(jd, state="stopping", message="Stop requested")
         try:
             if _pause_state(info) in ("requested", "paused"):
                 _resume_locked(jd)
         except Exception as exc:
             resume_error = exc
+        # Persist Stop after any resume bookkeeping so it cannot be overwritten to "running".
+        _service_update(jd, state="stopping", message="Stop requested")
     try:
         current_info = read_json(jd / "live.json", {}) or {}
         if current_info.get("ready") is not True:
