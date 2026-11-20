@@ -22,7 +22,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import ai_review, candidates, library, services, signals, spikes
+from . import ai_review, candidates, library, services, signals, spikes, storage
 from .common import JOBS, fmt_t, read_json, set_status, video_info, write_json
 
 BUFFER_S = 600          # seconds of video kept on disk
@@ -315,6 +315,7 @@ def start_process(jd: Path):
               else {"start_new_session": True})
     try:
         with _slot_guard():
+            storage.require_free_space(jd, "starting a live capture")
             _assert_live_slot_available()
             with (jd / "live.log").open("a", encoding="utf-8") as log:
                 process = subprocess.Popen(
@@ -1064,6 +1065,11 @@ def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
 def run(key):
     from .pipeline import prepare_clip
     jd = JOBS / key
+    try:
+        storage.require_free_space(jd, "starting live capture")
+    except storage.StorageSafetyError as exc:
+        set_status(jd, "error", 0, "", str(exc))
+        raise
     job = read_json(jd / "job.json")
     meta = read_json(jd / "meta.json", {}) or {}
     previous = read_json(jd / "clips.json", {}) or {}
@@ -1165,6 +1171,12 @@ def run(key):
             if time.time() > deadline:
                 why_stop = f"Stopped after {job.get('hours')} hours"
                 break
+            try:
+                storage.require_free_space(jd, "continuing live capture")
+            except storage.StorageSafetyError as exc:
+                why_stop = str(exc)
+                set_status(jd, "live", 0, why_stop)
+                break
             if not rec.alive() or rec.stalled():
                 rec.close()
                 rec, reconnect_status = _reconnect_recorder(job, jd, stop_evt, deadline=deadline)
@@ -1212,6 +1224,7 @@ def run(key):
                 cd.mkdir(parents=True, exist_ok=True)
                 set_status(jd, "live", 0, f"Cutting candidate {c['id']} (signal score {c['score']} at {c['vod_time']})")
                 try:
+                    storage.require_free_space(jd, f"extracting live candidate {c['id']}")
                     src = rec.cut(t0 + c["start"], t0 + c["end"], cd / "source.mp4")
                     info = video_info(src)
                     visual = candidates.inspect_video(src)
