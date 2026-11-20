@@ -743,6 +743,11 @@ def _youtube_live_state(url):
     return "unknown"
 
 
+def _stop_requested(jd: Path, stop_evt) -> bool:
+    """Observe both the in-process signal and the file-based Windows stop request."""
+    return stop_evt.is_set() or (jd / "stop").exists()
+
+
 def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
     """Reconnect only after a new segment is observed.
 
@@ -756,7 +761,7 @@ def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
     ended_checks = 0
     youtube = job.get("platform") == "youtube"
 
-    while not stop_evt.is_set():
+    while not _stop_requested(jd, stop_evt):
         if deadline is not None and time.time() >= deadline:
             return None, f"Stopped after {job.get('hours')} hours"
         cycle += 1
@@ -765,7 +770,7 @@ def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
                 return None, f"Stopped after {job.get('hours')} hours"
             set_status(jd, "live", 0,
                        f"Video capture disconnected; retry cycle {cycle}, attempt {attempt}/{len(RECONNECT_DELAYS)} after {delay}s")
-            if stop_evt.wait(delay):
+            if stop_evt.wait(delay) or _stop_requested(jd, stop_evt):
                 return None, "Stopped"
             existing = {f.name for f in segment_dir.glob("seg_*.ts")}
             candidate = None
@@ -779,7 +784,7 @@ def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
                                 return candidate, f"Video recorder reconnected on cycle {cycle}, attempt {attempt}."
                         except OSError:
                             continue
-                    if stop_evt.wait(0.25):
+                    if stop_evt.wait(0.25) or _stop_requested(jd, stop_evt):
                         candidate.close()
                         return None, "Stopped"
                     if deadline is not None and time.time() >= deadline:
@@ -813,7 +818,7 @@ def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
         wait_s = YOUTUBE_RECONNECT_WAIT_S
         if deadline is not None:
             wait_s = max(0.0, min(wait_s, deadline - time.time()))
-        if stop_evt.wait(wait_s):
+        if stop_evt.wait(wait_s) or _stop_requested(jd, stop_evt):
             return None, "Stopped"
 
     return None, "Stopped"
