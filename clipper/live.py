@@ -487,9 +487,12 @@ def stop(jd: Path):
         # for the child startup handshake to observe before recording begins.
         root, verified_info = None, {}
 
-    if root is not None and os.name != "nt":
-        # Use the verified psutil.Process object so psutil can re-check PID identity
-        # immediately before each signal instead of signalling a bare numeric PID.
+    if root is not None and resume_error:
+        # A partial resume may leave descendants suspended. Force a verified tree
+        # shutdown rather than relying on the watcher to execute its stop handler.
+        _terminate_worker_tree(root)
+    elif root is not None and os.name != "nt":
+        # Use the verified psutil.Process object so PID identity is rechecked by psutil.
         try:
             root.send_signal(signal.SIGCONT)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -498,12 +501,9 @@ def stop(jd: Path):
             root.send_signal(signal.SIGTERM)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-    elif root is not None and resume_error:
-        _terminate_worker_tree(root)
 
     if resume_error:
-        action = ("the verified worker tree was terminated" if root is not None and os.name == "nt"
-                  else "a termination signal was sent" if root is not None
+        action = ("the verified worker tree was terminated" if root is not None
                   else "the stop marker was persisted but no verified process signal could be sent")
         raise RuntimeError(
             f"Stop was requested; {action}, but the paused worker tree "
