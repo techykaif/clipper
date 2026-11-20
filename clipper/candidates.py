@@ -169,7 +169,7 @@ class CandidateQueue:
                 item["queue_state"] = "needs_review"
                 item["recovery_note"] = (
                     "The previous live worker stopped before extraction completed. "
-                    "The rolling-buffer timeline is not restart-persistent; re-detect this moment in a new session."
+                    "The candidate will be requeued only if the persisted wall-clock buffer fully covers it."
                 )
                 recovered = True
         if recovered:

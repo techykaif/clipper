@@ -6,7 +6,7 @@ from pathlib import Path
 
 import psutil
 
-from . import services
+from . import metrics, quality_feedback, services, storage
 from .common import JOBS, ROOT, read_json, set_status
 
 STALE_AFTER_S = 180
@@ -171,19 +171,28 @@ def snapshot():
     except (psutil.Error, OSError):
         pass
 
+    disk_warning = ""
     try:
-        usage = psutil.disk_usage(str(ROOT))
-        disk_text = f"{usage.free / (1024 ** 3):.1f} GB free · {usage.percent:.0f}% used"
-    except (psutil.Error, OSError):
+        disk_state = storage.snapshot(ROOT)
+        free_gib = disk_state["free_bytes"] / storage.GIB
+        reserve_gib = disk_state["reserve_bytes"] / storage.GIB
+        disk_text = f"{free_gib:.1f} GiB free · {disk_state['used_percent']:.0f}% used"
+        if disk_state["below_reserve"]:
+            disk_warning = (f"Only {free_gib:.1f} GiB free; Clipper's safety reserve is "
+                            f"{reserve_gib:.1f} GiB. New media work is blocked until space is freed.")
+    except storage.StorageSafetyError as exc:
         disk_text = "Unavailable"
+        disk_warning = f"Disk safety check failed: {exc}"
 
+    production_metrics = metrics.snapshot(jobs_dir=JOBS)
     return {
         "jobs": jobs, "active": active, "stale": stale, "errors": errors,
+        "production_metrics": production_metrics,
         "clips": sum(j["clip_count"] for j in jobs),
         "candidates": sum(j["candidate_count"] for j in jobs),
         "services": service_data.get("services", {}),
         "service_counts": service_data.get("counts", {}),
-        "cpu": cpu_text, "memory": memory_text, "disk": disk_text,
+        "cpu": cpu_text, "memory": memory_text, "disk": disk_text, "disk_warning": disk_warning,
     }
 
 
@@ -193,7 +202,8 @@ def html_panel():
     service_counts = data.get("service_counts") or {}
     service_attention = bool(service_counts.get("attention") or service_counts.get("error"))
     is_paused = any(j["state"] == "PAUSED" for j in active)
-    needs_attention = bool(stale or errors or service_attention)
+    disk_warning = str(data.get("disk_warning") or "")
+    needs_attention = bool(stale or errors or service_attention or disk_warning)
     health = "Attention needed" if needs_attention else ("Paused" if is_paused and len(active) == 1 else ("Running" if active else "Idle"))
     tone = "np-err" if needs_attention else ("np-ok" if active else "")
     service_text = (
@@ -212,6 +222,10 @@ def html_panel():
         ("CPU", data["cpu"]),
         ("App + workers memory", data["memory"]),
         ("Disk", data["disk"]),
+        ("Clip feedback", quality_feedback.summary_text()),
+        ("Production", f"{data['production_metrics']['rendered']} Shorts rendered · {data['production_metrics']['render_failed']} failed"),
+        ("Review outcomes", f"{data['production_metrics']['review_keep']} kept · {data['production_metrics']['review_reject']} rejected · {data['production_metrics']['review_pending']} pending"),
+        ("Media stored", metrics.human_bytes(data["production_metrics"]["media_bytes"])),
     ]
     stats = "".join(
         f"<div><dt>{html.escape(k)}</dt><dd>{html.escape(v)}</dd></div>" for k, v in cells
@@ -223,6 +237,8 @@ def html_panel():
             f"<li><b>{html.escape(job['state'])}</b> · {html.escape(job['title'])}"
             f"<small>{html.escape(detail[:180])}</small></li>"
         )
+    if disk_warning:
+        rows.insert(0, f"<li><b>DISK SAFETY</b> · {html.escape(disk_warning[:180])}</li>")
     if not rows:
         rows.append("<li>No active or stale workers.</li>")
     return (

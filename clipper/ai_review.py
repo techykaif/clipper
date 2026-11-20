@@ -7,6 +7,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from . import ai_budget
 from .common import TMP, read_json, tool, write_json
 
 SCHEMA = {
@@ -160,7 +161,16 @@ def review_clip(job_dir, candidate):
         if "--sandbox" not in help_text or "--dangerously-skip-permissions" not in help_text:
             raise RuntimeError("This Antigravity CLI build lacks the required sandbox or permission flags.")
 
-        info = (read_json(cd / "clip.json", {}) or {}).get("info") or {}
+        reservation = ai_budget.reserve(jd.name, int(candidate["id"]))
+        if not reservation.get("allowed"):
+            result = _failure("Antigravity review not started: " + str(reservation.get("message") or "review budget exhausted")
+                              + f" ({reservation.get('daily_used', 0)}/{reservation.get('daily_limit', 0)} daily, "
+                              + f"{reservation.get('job_used', 0)}/{reservation.get('job_limit', 0)} for this stream).")
+            result["review_budget"] = reservation
+            write_json(cd / "review.json", result)
+            return result
+
+        info = (read_json(cd / "clip.json", {}) or {}).get("info") or {};
         duration = float(info.get("duration") or 0)
         if duration <= 0:
             raise RuntimeError("Clip duration is missing.")
@@ -206,5 +216,7 @@ def review_clip(job_dir, candidate):
     except Exception as exc:
         result = _failure(str(exc)[:1200])
 
+    if "reservation" in locals():
+        result["review_budget"] = reservation
     write_json(cd / "review.json", result)
     return result

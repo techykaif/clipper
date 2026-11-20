@@ -10,7 +10,7 @@ from pathlib import Path
 import gradio as gr
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import ai_review, library, live, pipeline, render, runtime, signals, stt
+from . import ai_review, library, live, pipeline, quality_feedback, render, runtime, signals, stt
 from .common import CONFIG, JOBS, REMOTION, TMP, config, read_json, write_json, fmt_t, font as font_of, tool
 from .platforms import detect
 
@@ -540,10 +540,11 @@ def _pause_btn(key):
 
 
 def _resume_btn(key):
-    visible = bool(key and (JOBS / key).exists() and
-                   (read_json(JOBS / key / "job.json", {}) or {}).get("live") and
-                   live.paused(JOBS / key))
-    return gr.update(visible=visible)
+    if not key or not (JOBS / key).exists() or not (read_json(JOBS / key / "job.json", {}) or {}).get("live"):
+        return gr.update(visible=False)
+    paused = live.paused(JOBS / key)
+    recovered = (read_json(JOBS / key / "live.json", {}) or {}).get("recovery_state") == "interrupted" and not live.running(JOBS / key)
+    return gr.update(visible=paused or recovered, value="Resume" if paused else "Recover & resume")
 
 
 def _del_btn(key):
@@ -574,12 +575,17 @@ def pause_live(key):
 
 def resume_live(key):
     if not key or not (JOBS / key).exists():
-        raise gr.Error("Select a paused live stream first.")
+        raise gr.Error("Select an interrupted or paused live stream first.")
     try:
-        live.resume(JOBS / key)
+        if live.paused(JOBS / key):
+            live.resume(JOBS / key)
+        else:
+            runtime.snapshot()
+            live.start_process(JOBS / key, resume=True)
+            gr.Info("Recovering the interrupted session. Only candidate intervals with complete saved footage will be re-extracted.")
     except Exception as exc:
         raise gr.Error(str(exc))
-    return status_html(key), gr.update(visible=True), gr.update(visible=False), sidebar_html(key)
+    return status_html(key), _pause_btn(key), _resume_btn(key), sidebar_html(key)
 
 
 def stop_live(key):
@@ -804,6 +810,24 @@ def open_studio(key, n):
 
 
 # ---------------- Antigravity candidate review ----------------
+def feedback_button_state(key, n):
+    visible = bool(key and n is not None and any(int(c.get("id", -1)) == int(n) for c in clips_of(key)))
+    return (gr.update(visible=visible), gr.update(visible=visible), gr.update(visible=visible))
+
+
+def save_clip_feedback(key, n, label):
+    if not key or n is None:
+        raise gr.Error("Open a clip before recording quality feedback.")
+    candidate = next((x for x in clips_of(key) if int(x.get("id", -1)) == int(n)), None)
+    if not candidate:
+        raise gr.Error("That clip is no longer in the active library.")
+    try:
+        quality_feedback.record(key, candidate, label)
+    except Exception as exc:
+        raise gr.Error(f"Could not save quality feedback: {exc}")
+    return f"<div class='np-note'>Saved: <b>{esc(label.title())}</b>. {esc(quality_feedback.summary_text())}</div>"
+
+
 def review_button_state(key, n):
     visible = bool(key and n is not None and (JOBS / key / "clips" / str(n) / "source.mp4").is_file())
     return gr.update(visible=visible, value="Review with Antigravity", interactive=True)
@@ -1266,6 +1290,11 @@ def build():
                                 card = gr.HTML(card_html(None, None), js_on_load=None)
                                 review_btn = gr.Button("Review with Antigravity", variant="primary", visible=False)
                                 review_msg = gr.HTML(js_on_load=None)
+                                with gr.Row():
+                                    feedback_good = gr.Button("Good clip", size="sm", visible=False)
+                                    feedback_bad = gr.Button("Poor clip", size="sm", visible=False)
+                                    feedback_unsure = gr.Button("Not sure", size="sm", visible=False)
+                                feedback_msg = gr.HTML(js_on_load=None)
                                 src_vid = gr.Video(label="Clip as downloaded", show_label=False, interactive=False,
                                                    elem_classes="np-media", visible=False)
 
@@ -1368,6 +1397,10 @@ def build():
         clip.change(highlight, [job, clip], [chart, clip_list], **quiet)
         clip.change(lambda n: gr.update(visible=n is not None), clip, del_clip, **quiet)
         clip.change(review_button_state, [job, clip], review_btn, **quiet)
+        clip.change(feedback_button_state, [job, clip], [feedback_good, feedback_bad, feedback_unsure], **quiet)
+        feedback_good.click(lambda k, n: save_clip_feedback(k, n, "keep"), [job, clip], feedback_msg, **quiet)
+        feedback_bad.click(lambda k, n: save_clip_feedback(k, n, "reject"), [job, clip], feedback_msg, **quiet)
+        feedback_unsure.click(lambda k, n: save_clip_feedback(k, n, "unsure"), [job, clip], feedback_msg, **quiet)
         review_btn.click(review_start_state, None, [review_btn, review_msg, clip], queue=False).then(
             review_with_antigravity, [job, clip], [review_msg, card, clip_list, clip], **quiet
         ).then(review_button_state, [job, clip], review_btn, **quiet)

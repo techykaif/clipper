@@ -61,6 +61,9 @@ clipper serve                                   # dashboard at http://localhost:
 clipper analyze https://www.twitch.tv/videos/…  # a past stream, found by chat spikes
 clipper analyze <link> --by chat,speech --words "no way,clip that" --min-score 80   # chat + what's said, keep 80+
 clipper live https://kick.com/somechannel      # a stream that's live now (Twitch, YouTube or Kick; `clipper stop <job>` to stop)
+clipper resume <job>                           # safely recover an interrupted live session
+clipper cleanup                                # preview old temporary caches and diagnostic logs
+clipper cleanup --apply                        # apply the displayed cleanup plan
 clipper render <job> <clip number>              # render a Short from the terminal
 clipper list                                    # every stream you've clipped
 clipper stt-download                            # add speech-to-text later
@@ -86,10 +89,14 @@ Clipper watches the stream as it happens:
 - It reads chat live: Twitch through its public chat server, read-only and without a login; YouTube through yt-dlp; Kick through Kick's realtime chat service with an anonymous token.
 - It records the video into a rolling 10-minute buffer.
 - The recorder retries transient HTTP and fragment failures with exponential backoff. If it exits, Clipper restarts it and waits for a fresh segment. For YouTube, recovery continues while the live-status check is live or inconclusive; the watcher ends only after two explicit post-live checks, the configured watch limit, or a manual stop. Twitch and Kick retain bounded recorder restart attempts. YouTube live chat reconnects with message-ID deduplication.
-- One live source is allowed at a time. A paused source still occupies the slot; stop it before starting another.
+- One live source is allowed at a time. A paused source still occupies the slot; stop it before starting another. When a worker crashes, saved chat and buffer timestamps remain tied to the original session clock. Use **Recover & resume** on the dashboard (or `clipper resume <job>`) to continue. Clipper validates every interrupted candidate against the saved segment timeline and only re-extracts moments whose complete footage still exists; it will not join segments across a recording gap.
 - It cuts each spike into a clip once chat calms down.
 
 Times count from when Clipper started watching. It stops when you press **Stop watching**, when the stream ends, or after the number of hours set under *More options* (6 by default). For live jobs, use **Pause** and **Resume** to suspend and continue the watcher plus its media/chat subprocesses. **Stop watching** resumes a paused worker before requesting a clean stop.
+
+### Storage safety
+
+Clipper keeps a configurable free-space reserve (2 GiB by default). It checks before live capture, while a live watcher runs, before each VOD clip download and before each Short render. If a live session crosses the reserve, Clipper stops capture cleanly and removes its temporary rolling buffer; already extracted clips are preserved. The Runtime health panel warns when free space is below the reserve or when the volume cannot be inspected. Set `CLIPPER_MIN_FREE_GB=3` before launching Clipper to reserve 3 GiB instead; set it to `0` only to deliberately disable the guard. This does not automatically delete old jobs or finished media.
 
 ### Review and make a Short
 
@@ -126,6 +133,15 @@ Effects live in `clips/<n>/fx.json` next to the dashboard's `edit.json`; the ful
 | Dashboard (Gradio) | `clipper/app.py` |
 
 Everything Clipper downloads or makes stays in the install folder: `jobs/` for streams and clips, `tmp/` for caches.
+### Budgets, feedback, notifications and cleanup
+
+Antigravity candidate review is capped at 20 attempts per local calendar day and 10 per stream by default. Configure `CLIPPER_AI_REVIEW_DAILY_LIMIT` and `CLIPPER_AI_REVIEW_JOB_LIMIT` before launching Clipper. A review attempt is counted before invocation so failures cannot create an unbounded retry loop.
+
+After opening a clip, label it **Good clip**, **Poor clip** or **Not sure**. Clipper stores only the label, score and minimal candidate identifiers. After at least 20 good/poor labels, Runtime health may show an observed minimum-score suggestion. Clipper never changes the threshold automatically.
+
+Desktop notifications are disabled by default. Set `CLIPPER_DESKTOP_NOTIFICATIONS=1` before launch to enable supported native notifications (macOS via osascript, Linux via notify-send, and Windows when BurntToast is available).
+
+`clipper cleanup` is a dry-run preview for temporary cache files older than 14 days and diagnostic logs older than 30 days. Use `clipper cleanup --apply` only after reviewing the listed paths. This cleanup never removes source clips, finished Shorts, job metadata or rolling-buffer footage.
 
 ## Notes
 

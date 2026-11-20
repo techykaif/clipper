@@ -28,7 +28,8 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 - [x] Wire quality scoring into VOD/live clip preparation and show persistent candidate totals in the runtime dashboard.
 - [x] Add 78 source-level regression test methods across runtime, AI-review, library, candidate and render suites. The user confirmed all 78 passed on the Mac after the render-watchdog test fix.
 - [x] Run the complete 78-test revision on the Mac; the user confirmed it passed.
-- [ ] Run the new 96-test revision on the Mac after pulling the runtime-registry batch (18 new registry/recovery tests added).
+- [x] Run the 96-test revision on the Mac; the user confirmed the complete 96-test suite passed.
+- [ ] Run the 132-test suite on the target Mac after pulling the completed core branch; the new recovery, budget, feedback, retention, notifications and metrics tests have not yet been executed.
 - [ ] Validate live-worker pause/resume/stop and real authorized-stream recovery behavior.
 - [ ] Validate visual scoring against representative GTA V/VI clips and tune thresholds from observed false positives/negatives.
 - [ ] Exercise Windows-specific process/locking paths.
@@ -64,7 +65,8 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [x] Persistent live candidate queue, stable IDs, deduplication, restart-safe state preservation and live clip extraction; visual-quality scores are applied before acceptance.
 - [x] Optional Antigravity quality gate for extracted candidates (KEEP / REJECT / REVIEW); rejected media is removed from the active library and sent to OS Trash / Recycle Bin where available.
 - [x] Isolated sampled-frame review workspace, structured JSON verdict validation, bounded timeout and fail-to-REVIEW behavior.
-- [ ] Add configurable provider/model budgets and review-quality calibration from user feedback.
+- [x] Add atomic daily and per-stream Antigravity review budgets with conservative defaults and fail-closed accounting.
+- [x] Add explicit Good/Poor/Unsure candidate feedback and score-threshold calibration suggestions; suggestions never change detection thresholds automatically.
 
 ## M4 — Automated vertical production
 - [x] Automatic crop/layout defaults, hook timeline, configurable subtitles and default vertical export composition.
@@ -78,9 +80,12 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [ ] Manual submission package fallback.
 
 ## M6 — Reliability and analytics
-- [ ] Restart-persistent rolling video buffer and safe media-timeline recovery. The current recovery path intentionally does not re-cut old timestamps after a worker crash.
-- [ ] Storage retention policy, low-disk safeguards and desktop notifications.
-- [ ] Metrics and campaign performance/earnings tracking.
+- [x] Persist the original live-session wall clock and existing rolling segments across an unexpected worker exit; add an explicit dashboard/CLI recovery action. Requeue an interrupted candidate only after ffprobe confirms full wall-clock coverage, and refuse to bridge missing capture gaps.
+- [x] Add opt-in native desktop notifications (disabled by default) for completed analyses, ready candidates and finished Shorts.
+- [x] Add preview-first retention cleanup for old temporary caches and diagnostic logs; finished clips, source media and saved buffers are excluded.
+- [x] Configurable free-space reserve with fail-closed checks before live capture, while a live source is running, before VOD clip downloads and before Short renders; dashboard health surfaces low-space or inspection failures.
+- [x] Aggregate local production metrics for streams, candidates, rendered Shorts, review outcomes and stored media.
+- [ ] Campaign performance/earnings tracking (requires the gated publishing integrations).
 
 ## Rules
 - Keep changes small, focused and reviewable.

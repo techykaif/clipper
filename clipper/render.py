@@ -20,7 +20,7 @@ from pathlib import Path
 import psutil
 
 from .common import REMOTION, read_json, tool, write_json
-from . import services, subs
+from . import notifications, services, storage, subs
 
 EDITABLE = ["trimStart", "trimEnd", "hookStart", "hookEnd", "hookEnabled", "layout", "split", "faceRect", "gameRect",
             "subsEnabled", "subColor", "subSize", "subY", "subUpper"]
@@ -640,6 +640,7 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
             service_heartbeat_thread = None
 
     try:
+        storage.require_free_space(jd, f"rendering vertical clip {n}")
         with _render_guard(report_progress):
             _render_state(cd, "running", attempts=attempts, started_at=time.time(), error=None,
                           resource_profile=resources)
@@ -673,6 +674,7 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
                           output=str(out), output_bytes=validation["bytes"], output_info=validation,
                           error=None)
             report_progress(100, "Export validated and saved")
+            notifications.notify("Clipper Short rendered", f"Clip {n} from {jd.name} is ready.")
             if service_recorded:
                 try:
                     services.finish(service_id, process.pid, service_created, state="completed",

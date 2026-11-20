@@ -36,6 +36,10 @@ def main():
     r.add_argument("key")
     r.add_argument("n", type=int)
     sub.add_parser("list")
+    cleanup = sub.add_parser("cleanup", help="preview or apply safe cleanup of old temporary files and diagnostic logs")
+    cleanup.add_argument("--tmp-days", type=float, default=14)
+    cleanup.add_argument("--logs-days", type=float, default=30)
+    cleanup.add_argument("--apply", action="store_true", help="delete the listed temporary/cache files and old logs")
     lv = sub.add_parser("live")
     lv.add_argument("url")
     lv.add_argument("--hours", type=float, default=6.0)
@@ -44,6 +48,8 @@ def main():
     lv.add_argument("--min-score", type=int, default=85)
     lr = sub.add_parser("live-run")
     lr.add_argument("key")
+    rs = sub.add_parser("resume", help="safely resume an interrupted live session from its saved buffer")
+    rs.add_argument("key")
     st = sub.add_parser("stop")
     st.add_argument("key")
     sub.add_parser("stt-download")
@@ -109,6 +115,11 @@ def main():
     elif args.cmd == "live-run":
         from . import live
         live.run(args.key)
+    elif args.cmd == "resume":
+        from . import live, runtime
+        runtime.snapshot()
+        pid = live.start_process(JOBS / args.key, resume=True)
+        print(f"Resuming {args.key} from its saved wall-clock buffer (worker PID {pid}).")
     elif args.cmd == "stop":
         from . import live
         live.stop(JOBS / args.key)
@@ -141,6 +152,17 @@ def main():
                 print(memes.save(cd, memes.by_id(args.id, args.name), args.top, args.bottom))
         except memes.MemeError as ex:
             raise SystemExit(str(ex))
+    elif args.cmd == "cleanup":
+        from . import retention
+        plan = retention.plan_cleanup(tmp_days=args.tmp_days, logs_days=args.logs_days)
+        print(f"Cleanup preview: {plan['count']} files · {retention.human_bytes(plan['bytes'])}")
+        for item in plan["items"]:
+            print(f"  [{item['category']}] {item['path']} ({retention.human_bytes(item['size'])})")
+        if args.apply:
+            result = retention.apply_cleanup(plan)
+            print(f"Deleted {len(result['deleted'])} files · {retention.human_bytes(result['bytes'])}; skipped {len(result['skipped'])}.")
+        else:
+            print("Dry run only. Add --apply to remove the listed files. Finished clips and source media are never included.")
     elif args.cmd == "list":
         for jd in sorted(JOBS.iterdir()):
             c = read_json(jd / "clips.json", {}) or {}
