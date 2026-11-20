@@ -123,15 +123,27 @@ class CandidateQueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 queue.mark(item["id"], "mystery")
 
-    def test_interrupted_processing_candidate_is_requeued_with_same_id(self):
+    def test_interrupted_processing_candidate_is_preserved_for_review(self):
         with tempfile.TemporaryDirectory() as folder:
             queue = candidates.CandidateQueue(folder)
             item = queue.discover([self.candidate(600)])[0]
             queue.mark(item["id"], "processing")
             reopened = candidates.CandidateQueue(folder)
-            self.assertEqual(reopened.pending()[0]["id"], item["id"])
-            self.assertEqual(reopened.pending()[0]["queue_state"], "queued")
+            recovered = reopened.items[0]
+            self.assertEqual(recovered["id"], item["id"])
+            self.assertEqual(recovered["queue_state"], "needs_review")
+            self.assertIn("rolling-buffer timeline", recovered["recovery_note"])
+            self.assertEqual(reopened.pending(), [])
             self.assertEqual(reopened.next_id, item["id"] + 1)
+
+    def test_interrupted_queued_candidate_is_not_cut_again_on_new_timeline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            queue = candidates.CandidateQueue(folder)
+            item = queue.discover([self.candidate(800)])[0]
+            reopened = candidates.CandidateQueue(folder)
+            self.assertEqual(reopened.items[0]["id"], item["id"])
+            self.assertEqual(reopened.items[0]["queue_state"], "needs_review")
+            self.assertEqual(reopened.pending(), [])
 
     def test_pending_excludes_ready_and_needs_review_candidates(self):
         with tempfile.TemporaryDirectory() as folder:
