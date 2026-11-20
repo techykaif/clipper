@@ -16,7 +16,7 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 ## Current batch — live-worker lifecycle (implementation in progress; verification pending)
 
 - [x] Reserve the single-live slot atomically during detached worker launch and let the child adopt its reservation.
-- [x] Preserve immediate Stop requests through a readiness handshake; install the signal handler and persist the worker's own PID/creation time before capture begins. Check again after chat-reader startup so a Stop does not start the recorder.
+- [x] Preserve immediate Stop requests through a readiness handshake; install the signal handler and persist the worker's own PID/creation time before capture begins. Both dashboard and foreground CLI launch use the same managed detached worker; a Stop after chat-reader startup is checked before video recording begins.
 - [x] Serialize pause/resume transitions, freeze the watcher before enumerating descendants, and persist recoverable pause states.
 - [x] Verify PID creation time and command identity before Stop; use verified psutil process objects and best-effort tree termination after partial resume failure.
 - [x] Add worker heartbeats and classify new live workers with missing/stale heartbeats as stale while retaining legacy job compatibility.
