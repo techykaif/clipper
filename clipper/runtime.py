@@ -48,7 +48,7 @@ def _job_snapshot(jd):
     state = classify_job_state(status.get("stage"), is_live, alive, bool(live_info.get("ended")), age, is_paused)
     clips = (read_json(jd / "clips.json", {}) or {}).get("clips", []) or []
     queue = read_json(jd / "candidates.json", {}) or {}
-    queue_items = queue.get("items", []) if isinstance(queue, dict) else []
+    queue_items = queue.get("items") if isinstance(queue, dict) else None
     candidate_count = len(queue_items) if isinstance(queue_items, list) else len(clips)
     meta = read_json(jd / "meta.json", {}) or {}
     title = ((read_json(jd / "clips.json", {}) or {}).get("title")
@@ -72,7 +72,7 @@ def snapshot():
             except (OSError, ValueError, TypeError):
                 jobs.append({"key": jd.name, "title": jd.name, "state": "UNKNOWN",
                              "stage": "", "message": "Could not read job status.", "error": "",
-                             "pid": None, "clip_count": 0, "is_live": False})
+                             "pid": None, "clip_count": 0, "candidate_count": 0, "is_live": False})
 
     active = [j for j in jobs if j["state"] in ("RUNNING", "QUEUED", "PAUSED")]
     stale = [j for j in jobs if j["state"] in ("STALE", "UNKNOWN")]
