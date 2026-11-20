@@ -20,7 +20,7 @@ from pathlib import Path
 import psutil
 
 from .common import REMOTION, read_json, tool, write_json
-from . import services, subs
+from . import services, storage, subs
 
 EDITABLE = ["trimStart", "trimEnd", "hookStart", "hookEnd", "hookEnabled", "layout", "split", "faceRect", "gameRect",
             "subsEnabled", "subColor", "subSize", "subY", "subUpper"]
@@ -579,6 +579,7 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
     """Render one Short through a persistent single-render queue and atomic output promotion."""
     cd = jd / "clips" / str(n)
     cd.mkdir(parents=True, exist_ok=True)
+    storage.require_free_space(jd, f"rendering vertical clip {n}")
     review = read_json(cd / "review.json", {}) or {}
     if review.get("status") == "reviewed" and review.get("verdict") == "REJECT":
         raise RuntimeError("Antigravity rejected this candidate; it has been removed from the library.")
