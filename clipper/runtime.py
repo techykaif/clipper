@@ -6,7 +6,7 @@ from pathlib import Path
 
 import psutil
 
-from . import services, storage
+from . import quality_feedback, services, storage
 from .common import JOBS, ROOT, read_json, set_status
 
 STALE_AFTER_S = 180
@@ -220,6 +220,7 @@ def html_panel():
         ("CPU", data["cpu"]),
         ("App + workers memory", data["memory"]),
         ("Disk", data["disk"]),
+        ("Clip feedback", quality_feedback.summary_text()),
     ]
     stats = "".join(
         f"<div><dt>{html.escape(k)}</dt><dd>{html.escape(v)}</dd></div>" for k, v in cells
