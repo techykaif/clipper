@@ -31,13 +31,14 @@ python -m clipper serve
 
 For speech-to-text, install `python -m pip install -e ".[stt]"` and run `python -m clipper stt-download`. For vertical rendering, install Node.js 18+ and run `npm ci` inside `remotion/`. FFmpeg must be on PATH. The interactive shell/PowerShell installers prepare these tools; audit them before use on a new machine.
 
-## Known gaps / M1 plan
+## Current implementation status and known gaps
 
-- The app is manually launched; no login item or daemon is installed.
-- Past-stream analysis runs in a background thread and live monitoring runs in a detached child process. Status is file-backed, but there is no unified runtime coordinator or explicit pause/resume lifecycle.
-- The dashboard has per-job stop behavior, but no app-level service state, worker registry, resource usage panel or restart-safe pause queue.
-- Live capture uses a 600-second rolling disk buffer and prunes old segments. A cross-process lock now enforces one active live source, recovers dead-owner locks, and detects workers started by the previous lock-free version. End-to-end reconnect, crash recovery and target-hardware resource measurements remain to be performed.
-- A stdlib unittest baseline covers review-result validation, rejected-clip disposal, runtime-state classification, cross-process slot ownership/recovery, mocked recorder cleanup and bounded reconnect behavior. Tests do not exercise real FFmpeg, live platform APIs, Antigravity authentication or actual OS trash behavior on the user's machine.
-- Twitch/YouTube/Kick live reliability and M1 hardware targets must not be considered validated until exercised on the user's machines.
+- The app remains manually launched; no login item or OS daemon is installed.
+- Past-stream analysis runs in a background thread and live monitoring runs in a detached child process. State remains file-backed; there is not yet a unified persisted service registry or restart-safe task queue.
+- The existing dashboard exposes worker/resource health and live Start/Stop/Pause/Resume controls. Pause/resume transitions use recoverable state markers and a shared cross-process guard; Stop records its marker before recovery and verifies the saved worker identity before signalling.
+- Detached live-worker launch reserves the one-source slot before releasing the launch guard; the child adopts that reservation. A heartbeat is written independently of long clip/review operations, allowing the dashboard to identify an alive-but-stale live worker.
+- Twitch, YouTube and Kick chat readers are wrapped so an unexpected adapter exit is visible to the watcher. Shutdown waits for the reader thread; Kick polling is bounded for responsive stop. YouTube recorder retry/recovery is implemented, including status confirmation before ending after repeated capture failure.
+- A stdlib unittest suite covers review validation, rejected-clip disposal, slot ownership, mocked recorder cleanup/reconnect and selected lifecycle transitions. The current branch adds regression tests for launch reservation, PID reuse safety, stop markers, heartbeat and reader-exit handling. These are mocked/source-level checks only; no claim is made that the latest complete suite has passed on the user's Mac.
+- The implementation still needs local suite execution, real YouTube/Twitch/Kick stream testing, process-tree/Windows validation, M1 resource measurements and broader crash-recovery testing. These remain acceptance gates, not completed work.
 
-M1 should add a small local runtime coordinator, safe worker status discovery, explicit pause/resume semantics, resource visibility and idempotent shutdown while keeping the current Gradio UI and one-source/one-render defaults.
+M1 still needs a persisted runtime service registry, restart-safe queue state and stronger process-tree recovery. Preserve the existing Gradio dashboard and one-source/one-render defaults.
