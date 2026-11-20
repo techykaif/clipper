@@ -883,7 +883,8 @@ def run(key):
     scan, heard = None, set()
     try:
         write_json(jd / "live.json", {**(read_json(jd / "live.json", {}) or {}), "pid": os.getpid(),
-                                      "create_time": psutil.Process(os.getpid()).create_time(), "t0": t0})
+                                      "create_time": psutil.Process(os.getpid()).create_time(), "t0": t0,
+                                      "heartbeat_enabled": True})
     except Exception as exc:
         stop_evt.set()
         rec.close()
