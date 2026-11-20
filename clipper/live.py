@@ -517,6 +517,85 @@ def _terminate_worker_tree(root, timeout=5):
         psutil.wait_procs(alive, timeout=timeout)
 
 
+def recover_crashed_worker(jd: Path, record) -> bool:
+    """Mark a definitively dead live worker interrupted without replaying its old buffer timeline."""
+    jd = Path(jd)
+    if not isinstance(record, dict) or record.get("type") != "live-worker" or record.get("state") != "crashed":
+        return False
+    try:
+        pid = int(record.get("pid") or 0)
+        created = float(record.get("create_time"))
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+
+    # Recheck identity immediately before recovery. AccessDenied is uncertainty, never proof of death.
+    try:
+        process = psutil.Process(pid)
+        if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+            if abs(process.create_time() - created) <= 2.0:
+                return False
+    except psutil.AccessDenied:
+        return False
+    except psutil.NoSuchProcess:
+        pass
+
+    service_id = str(record.get("id") or _service_id(jd))
+    note = (
+        "Previous live worker exited unexpectedly. Saved clips are preserved; unfinished candidates "
+        "were moved to Needs review. The old rolling-buffer timeline cannot be resumed safely, so "
+        "start a new live session."
+    )
+    with _slot_guard():
+        info = read_json(jd / "live.json", {}) or {}
+        try:
+            same_worker = (int(info.get("pid") or 0) == pid
+                           and abs(float(info.get("create_time")) - created) <= 2.0)
+        except (TypeError, ValueError):
+            same_worker = False
+        job = read_json(jd / "job.json", {}) or {}
+        if not same_worker or info.get("ended") or job.get("live") is not True:
+            return False
+
+        recovery_error = ""
+        try:
+            queue = candidates.CandidateQueue(jd)
+            counts = queue.counts()
+            pending_review = counts.get("needs_review", 0)
+        except Exception as exc:
+            pending_review = 0
+            recovery_error = f" Candidate queue recovery needs attention: {type(exc).__name__}: {exc}"
+        write_json(jd / "live.json", {
+            **info,
+            "ended": time.time(),
+            "ready": False,
+            "paused": False,
+            "pause_state": "stopped",
+            "recovery_state": "interrupted",
+            "recovery_at": time.time(),
+            "recovery_reason": note,
+        })
+        status = read_json(jd / "status.json", {}) or {}
+        if status.get("stage") not in ("done", "error"):
+            set_status(jd, "error", 0, "",
+                       note + f" {pending_review} candidate(s) require review." + recovery_error)
+        lock_owner = read_json(LIVE_LOCK, {}) or {}
+        try:
+            lock_matches = (int(lock_owner.get("pid") or 0) == pid
+                            and lock_owner.get("job") == jd.name
+                            and abs(float(lock_owner.get("create_time")) - created) <= 2.0)
+        except (TypeError, ValueError):
+            lock_matches = False
+        if lock_matches:
+            LIVE_LOCK.unlink(missing_ok=True)
+    try:
+        services.annotate_recovery(service_id, pid, created, note + recovery_error, jobs_dir=JOBS)
+    except Exception:
+        pass
+    return True
+
+
 def stop(jd: Path):
     resume_error = None
     with _slot_guard():
