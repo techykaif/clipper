@@ -5,6 +5,7 @@ import time
 
 import psutil
 
+from . import services
 from .common import JOBS, ROOT, read_json
 
 STALE_AFTER_S = 180
@@ -62,6 +63,25 @@ def _job_snapshot(jd):
 
 
 def snapshot():
+    # Reconcile process identities before reading jobs. Only a positively dead/reused PID
+    # can trigger recovery; stale or inaccessible processes are surfaced, never killed.
+    try:
+        service_data = services.snapshot(jobs_dir=JOBS)
+        for record in service_data["services"].values():
+            if record.get("type") == "live-worker" and record.get("state") == "crashed" \
+                    and not record.get("recovered_at"):
+                try:
+                    from . import live
+                    live.recover_crashed_worker(JOBS / str(record.get("job_key") or ""), record)
+                except (OSError, ValueError, TypeError):
+                    pass
+    except Exception as exc:
+        service_data = {
+            "services": {},
+            "counts": {"active": 0, "stale": 0, "unverified": 0, "crashed": 0, "failed": 0,
+                       "attention": 1, "error": f"{type(exc).__name__}: {exc}"},
+        }
+
     jobs = []
     if JOBS.is_dir():
         for jd in sorted(JOBS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -113,6 +133,8 @@ def snapshot():
         "jobs": jobs, "active": active, "stale": stale, "errors": errors,
         "clips": sum(j["clip_count"] for j in jobs),
         "candidates": sum(j["candidate_count"] for j in jobs),
+        "services": service_data.get("services", {}),
+        "service_counts": service_data.get("counts", {}),
         "cpu": cpu_text, "memory": memory_text, "disk": disk_text,
     }
 
@@ -123,9 +145,17 @@ def html_panel():
     is_paused = any(j["state"] == "PAUSED" for j in active)
     health = "Attention needed" if stale or errors else ("Paused" if is_paused and len(active) == 1 else ("Running" if active else "Idle"))
     tone = "np-err" if stale or errors else ("np-ok" if active else "")
+    service_counts = data.get("service_counts") or {}
+    service_text = (
+        f"{service_counts.get('active', 0)} active · {service_counts.get('stale', 0)} stale · "
+        f"{service_counts.get('crashed', 0)} crashed · {service_counts.get('unverified', 0)} unverified"
+    )
+    if service_counts.get("error"):
+        service_text = "Registry unavailable"
     cells = [
         ("Health", health),
         ("Workers", f"{len(active)} active · {len(stale)} stale · {len(errors)} errors"),
+        ("Services", service_text),
         ("Candidates", str(data["candidates"])),
         ("CPU", data["cpu"]),
         ("App + workers memory", data["memory"]),
