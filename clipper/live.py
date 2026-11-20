@@ -1047,7 +1047,7 @@ def run(key):
             candidate_queue.discover(
                 eligible, dedupe_window=spikes.DEDUPE, minimum_score=job.get("min_score", 0)
             )
-            # Includes new discoveries and any queued work recovered from an interrupted worker.
+            # Only this worker's newly queued items are cut; interrupted work is preserved for review.
             for c in candidate_queue.pending():
                 c["vod_time"] = fmt_t(c["start"])
                 c["what"], c["why"] = "", ""
