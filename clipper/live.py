@@ -882,6 +882,7 @@ def run(key):
     listen = "audio" in basis or "speech" in basis
     scan, heard = None, set()
     try:
+        (jd / "heartbeat").touch()
         write_json(jd / "live.json", {**(read_json(jd / "live.json", {}) or {}), "pid": os.getpid(),
                                       "create_time": psutil.Process(os.getpid()).create_time(), "t0": t0,
                                       "heartbeat_enabled": True})
