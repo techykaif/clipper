@@ -21,7 +21,7 @@ def classify_job_state(stage, is_live, process_alive=False, ended=False, age_s=N
     if is_live:
         if not process_alive:
             return "STALE"
-        return "STALE" if age_s is None or age_s > STALE_AFTER_S else "RUNNING
+        return "STALE" if age_s is None or age_s > STALE_AFTER_S else "RUNNING"
     if not stage:
         return "UNKNOWN"
     if stage == "queued":
