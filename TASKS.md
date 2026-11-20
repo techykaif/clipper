@@ -1,6 +1,19 @@
 # Tasks
 
-## M0 — Baseline audit (current)
+## Delivery sequence and deadline
+
+**Target: complete the agreed product scope by 2026-11-21 (India time).**
+
+Work must follow these gates in order; do not start external integrations early:
+
+1. **Core implementation first:** finish the local application, dashboard, ingestion, recorder/recovery, candidate pipeline, clip management, review safeguards, vertical production, persistence, resource controls and error handling. Add code-level regression tests alongside changes, but do not call the core ready yet.
+2. **Core verification gate:** after the core code is implemented and reviewed, run the complete automated suite, then component/integration tests for each local function. Fix failures and repeat until the release criteria are met. Only then mark the core application ready.
+3. **External integrations:** after core readiness, implement campaign/creator authorization, supported platform authentication/OAuth, publishing/submission, retries, audit trail and manual fallback.
+4. **Final acceptance:** run the end-to-end workflow through integrations, validate permissions and failure recovery, and record any unsupported or unverified cases. Do not claim production-ready where a platform or device has not been tested.
+
+If the 2026-11-21 deadline conflicts with reliable implementation or acceptance, report the exact unfinished scope instead of marking unchecked work complete or weakening the gates.
+
+## M0 — Baseline audit (current)## M0 — Baseline audit (current)
 - [x] Confirm fork, upstream parent, default branch and repository write permission.
 - [x] Create isolated feature branch.
 - [x] Record product and hardware constraints.
