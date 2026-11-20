@@ -719,6 +719,14 @@ def recover_crashed_render(record, jobs_dir=None) -> bool:
     manifest_path = cd / "render.json"
     manifest = read_json(manifest_path, {}) or {}
     if manifest.get("state") not in ("queued", "running") or int(manifest.get("attempts") or 0) != attempts:
+        try:
+            services.annotate_recovery(
+                str(record.get("id") or ""), pid, created,
+                "This crash record belongs to an older render attempt; the current render manifest was left untouched.",
+                jobs_dir=jobs_dir,
+            )
+        except Exception:
+            pass
         return False
 
     note = (
