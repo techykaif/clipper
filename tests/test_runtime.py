@@ -2,7 +2,9 @@ import json
 import os
 import tempfile
 import time
+import threading
 import unittest
+import psutil
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -12,7 +14,10 @@ from clipper.runtime import classify_job_state
 
 class RuntimeStateClassificationTests(unittest.TestCase):
     def test_live_process_is_running(self):
-        self.assertEqual(classify_job_state("live", True, process_alive=True), "RUNNING")
+        self.assertEqual(classify_job_state("live", True, process_alive=True, age_s=20), "RUNNING")
+
+    def test_live_process_with_stale_heartbeat_is_stale(self):
+        self.assertEqual(classify_job_state("live", True, process_alive=True, age_s=600), "STALE")
 
     def test_missing_live_process_is_stale(self):
         self.assertEqual(classify_job_state("live", True, process_alive=False), "STALE")
@@ -75,6 +80,62 @@ class LiveWorkerSlotTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     live._claim_live_slot("new-job")
                 self.assertTrue(lock.exists())
+
+
+class LiveWorkerLifecycleTests(unittest.TestCase):
+    def test_start_process_reserves_slot_before_child_adopts_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            first, second = jobs / "live-a", jobs / "live-b"
+            first.mkdir()
+            second.mkdir()
+            for jd in (first, second):
+                (jd / "job.json").write_text(json.dumps({"live": True}), encoding="utf-8")
+            with patch.object(live, "JOBS", jobs), patch.object(live, "LIVE_LOCK", jobs / ".live-worker.lock"):
+                child = Mock()
+                child.pid = os.getpid()
+                with patch.object(live.subprocess, "Popen", return_value=child):
+                    self.assertEqual(live.start_process(first), os.getpid())
+                    adopted = live._claim_live_slot(first.name)
+                    self.assertEqual(adopted["job"], first.name)
+                    with self.assertRaises(RuntimeError):
+                        live.start_process(second)
+                    live._release_live_slot(adopted)
+                    self.assertFalse((jobs / ".live-worker.lock").exists())
+
+    def test_stop_marker_is_written_even_when_resume_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "live.json").write_text(json.dumps({
+                "pid": os.getpid(), "create_time": psutil.Process(os.getpid()).create_time(),
+                "paused": True, "pause_state": "paused"
+            }), encoding="utf-8")
+            with patch.object(live, "JOBS", jd.parent), patch.object(live, "LIVE_LOCK", jd.parent / ".lock"), \
+                 patch.object(live, "_resume_locked", side_effect=RuntimeError("resume denied")), \
+                 patch.object(live.os, "killpg") as killpg, patch.object(live.os, "kill") as kill:
+                with self.assertRaisesRegex(RuntimeError, "Stop was requested"):
+                    live.stop(jd)
+                self.assertTrue((jd / "stop").exists())
+                killpg.assert_called_once_with(os.getpid(), live.signal.SIGCONT)
+                kill.assert_called_once_with(os.getpid(), live.signal.SIGTERM)
+
+    def test_unexpected_chat_reader_exit_marks_reader_unhealthy(self):
+        chat = live.Chat(time.time())
+        stop_evt = threading.Event()
+        def exits():
+            return None
+        live._chat_reader_entry(exits, (), chat, stop_evt)
+        self.assertFalse(chat.alive)
+        self.assertIn("stopped unexpectedly", chat.error)
+
+    def test_chat_reader_exception_is_visible(self):
+        chat = live.Chat(time.time())
+        stop_evt = threading.Event()
+        def fails():
+            raise RuntimeError("provider refused connection")
+        live._chat_reader_entry(fails, (), chat, stop_evt)
+        self.assertFalse(chat.alive)
+        self.assertIn("provider refused connection", chat.error)
 
 
 class YouTubeLiveChatReconnectTests(unittest.TestCase):
