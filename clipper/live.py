@@ -922,6 +922,11 @@ def run(key):
     jd = JOBS / key
     job = read_json(jd / "job.json")
     meta = read_json(jd / "meta.json", {}) or {}
+    previous = read_json(jd / "clips.json", {}) or {}
+    clips = list(previous.get("clips", []) or [])
+    first_id = max((int(c.get("id") or 0) for c in clips), default=0) + 1
+    candidate_queue = candidates.CandidateQueue(jd, first_id=first_id)
+    candidate_queue.seed(clips)
     t0 = time.time()
     stop_evt = threading.Event()
     signal.signal(signal.SIGTERM, lambda *a: stop_evt.set())
@@ -975,11 +980,6 @@ def run(key):
         raise
 
     deadline = t0 + float(job.get("hours") or 6) * 3600
-    previous = read_json(jd / "clips.json", {}) or {}
-    clips = list(previous.get("clips", []) or [])
-    first_id = max((int(c.get("id") or 0) for c in clips), default=0) + 1
-    candidate_queue = candidates.CandidateQueue(jd, first_id=first_id)
-    candidate_queue.seed(clips)
     why_stop = "Stopped"
     basis = job.get("basis") or ["chat"]
     listen = "audio" in basis or "speech" in basis
@@ -1032,7 +1032,7 @@ def run(key):
                         scan.db = [-90.0] * int(max(0.0, w - t0) // signals.BIN)
                     scan.feed(signals.segment_audio(f))
                     heard.add(f.name)
-            _publish(jd, meta, job, msgs, elapsed, clips, chat.error, scan)
+            _publish(jd, meta, job, msgs, elapsed, clips, chat.error, scan, candidate_queue)
             if elapsed < WARMUP_S or ("chat" in basis and len(msgs) < 10) or (listen and not scan):
                 set_status(jd, "live", 0, f"Watching for {fmt_t(elapsed)}. Learning this chat's normal pace before "
                                           f"clipping ({len(msgs)} messages so far)")
@@ -1117,7 +1117,7 @@ def run(key):
                 chat.error = (chat.error + "; " if chat.error else "") + "Chat reader did not stop within 15 seconds."
             chat.alive = False
             msgs = chat.snapshot()
-            _publish(jd, meta, job, msgs, time.time() - t0, clips, chat.error, scan)
+            _publish(jd, meta, job, msgs, time.time() - t0, clips, chat.error, scan, candidate_queue)
             for f in (jd / "buffer").glob("*"):
                 f.unlink(missing_ok=True)
             try:
