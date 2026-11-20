@@ -13,7 +13,22 @@ Work must follow these gates in order; do not start external integrations early:
 
 If the 2026-11-21 deadline conflicts with reliable implementation or acceptance, report the exact unfinished scope instead of marking unchecked work complete or weakening the gates.
 
-## M0 — Baseline audit (current)## M0 — Baseline audit (current)
+## Current batch — live-worker lifecycle (implementation in progress; verification pending)
+
+- [x] Reserve the single-live slot atomically during detached worker launch and let the child adopt its reservation.
+- [x] Preserve immediate stop requests through worker startup and reconnect attempts.
+- [x] Serialize pause/resume transitions and persist recoverable pause states.
+- [x] Verify PID creation time and command identity before sending Stop signals.
+- [x] Add worker heartbeats and classify an alive-but-hung live process as stale.
+- [x] Surface unexpected chat-reader exits, join reader threads during shutdown, and shorten Kick websocket polling for responsive Stop.
+- [x] Add regression tests for launch reservation, Stop failure/PID reuse, chat-reader exit, file-based stop requests and heartbeat creation.
+- [ ] Run the complete automated suite on the Mac after pulling this batch.
+- [ ] Validate lifecycle behavior with real authorized livestreams, including interruption and Stop while paused/reconnecting.
+- [ ] Exercise Windows-specific process/locking paths.
+
+This batch is not marked ready until the local suite and functional checks pass.
+
+## M0 — Baseline audit (current)
 - [x] Confirm fork, upstream parent, default branch and repository write permission.
 - [x] Create isolated feature branch.
 - [x] Record product and hardware constraints.
