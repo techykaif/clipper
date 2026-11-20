@@ -26,8 +26,9 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 - [x] Recover old queue records conservatively: unfinished candidates are preserved for review, not automatically re-cut against a reset rolling-buffer timeline.
 - [x] Add sampled-frame blur, brightness and low-motion risk scoring; unavailable frame decoding fails open. This is a quality signal, not a semantic GTA menu/photo-mode classifier.
 - [x] Wire quality scoring into VOD/live clip preparation and show persistent candidate totals in the runtime dashboard.
-- [x] Add 78 source-level regression test methods across runtime, AI-review, library, candidate and render suites. The user confirmed the prior 62-test revision passed on the Mac; the 16 new render tests still need a fresh local run.
-- [ ] Run the complete updated automated suite on the Mac after pulling this batch.
+- [x] Add 78 source-level regression test methods across runtime, AI-review, library, candidate and render suites. The user confirmed all 78 passed on the Mac after the render-watchdog test fix.
+- [x] Run the complete 78-test revision on the Mac; the user confirmed it passed.
+- [ ] Run the new 92-test revision on the Mac after pulling the runtime-registry batch.
 - [ ] Validate live-worker pause/resume/stop and real authorized-stream recovery behavior.
 - [ ] Validate visual scoring against representative GTA V/VI clips and tune thresholds from observed false positives/negatives.
 - [ ] Exercise Windows-specific process/locking paths.
@@ -43,12 +44,13 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [x] Record limitations and M1 plan in AUDIT.md and ARCHITECTURE.md.
 
 ## M1 — Dashboard-controlled local runtime
-- [ ] Add explicit runtime service state and lifecycle management.
-- [x] Surface live/stale worker health, candidate counts, errors, CPU, memory and disk usage in a read-only panel.
-- [x] Add per-live-job Start / Stop / Pause / Resume controls; pause suspends the verified watcher + descendant process tree, and Stop resumes before shutdown.
-- [x] Preserve manual launch; no login auto-start.
-- [x] Enforce a cross-process single-live-source slot with stale lock recovery; the dashboard's render lock continues to serialize analysis/render work.
-- [ ] Add a unified persisted runtime service registry and restart-safe render queue; the live candidate queue is now file-backed, but the rolling video buffer is not restart-persistent.
+- [x] Add explicit runtime service state and lifecycle management through a versioned, atomic, cross-process registry.
+- [x] Register live workers, past-stream analysis runs and Remotion renders with PID + process-creation identity, lifecycle state, timestamps, messages and service-specific metadata.
+- [x] Persist heartbeats; reconcile stale, unverified, PID-reused, crashed and stopping services. Access-denied process checks fail safe and never trigger a false crash or automatic kill.
+- [x] Recover interrupted live sessions conservatively: preserve finished clips, move queued/processing candidates to Needs review, close only the matching stale live lock, and explain that the old buffer timeline cannot be resumed.
+- [x] Recover interrupted analysis as a manual retry, preserving existing artifacts; recover interrupted renders as failed, remove only that attempt's temporary files, and keep the last known-good final export.
+- [x] Persist render queue/running status alongside the existing cross-process single-render gate; restart recovery is explicit/manual, not an unsafe automatic replay.
+- [x] Surface service health counts in the dashboard's five-second runtime refresh.
 
 ## M2 — One-source live reliability
 - [x] Harden partial recorder startup cleanup and bound each FFmpeg clip cut to 180 seconds; mocked regression tests added (execution still requires running the suite).
@@ -76,7 +78,8 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [ ] Manual submission package fallback.
 
 ## M6 — Reliability and analytics
-- [ ] Persistent render/runtime queues, rolling-buffer recovery, storage retention policy and notifications. The live candidate queue is implemented, but it cannot reconstruct the previous worker's rolling video buffer after a crash.
+- [ ] Restart-persistent rolling video buffer and safe media-timeline recovery. The current recovery path intentionally does not re-cut old timestamps after a worker crash.
+- [ ] Storage retention policy, low-disk safeguards and desktop notifications.
 - [ ] Metrics and campaign performance/earnings tracking.
 
 ## Rules
