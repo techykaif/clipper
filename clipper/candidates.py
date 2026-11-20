@@ -136,7 +136,7 @@ def _bounded_record(candidate):
         "basis", "sub", "said", "hot_ref", "multiple", "peak_per_min", "avg_per_min", "z",
         "messages", "unique_chatters", "signals", "reaction_share", "top_words", "sample_chat",
         "auto_reason", "what", "why", "quality_adjustment", "quality_flags", "visual_quality",
-        "filtered_reason", "error", "review_verdict",
+        "filtered_reason", "error", "review_verdict", "recovery_note",
     )
     record = {key: candidate[key] for key in allowed if key in candidate}
     record["basis"] = list(record.get("basis") or [])[:3]
@@ -161,13 +161,16 @@ class CandidateQueue:
         max_id = max((int(item.get("id") or 0) for item in self.items), default=0)
         self.next_id = max(int(payload.get("next_id") or 1) if isinstance(payload, dict) else 1,
                            int(first_id or 1), max_id + 1)
-        # A worker may crash after claiming an item. Re-queue that interrupted work
-        # so the next worker can safely retry it using the same stable candidate ID.
+        # The live rolling buffer is not yet restart-persistent. Preserve unfinished
+        # candidate records, but require review instead of cutting against a reset timeline.
         recovered = False
         for item in self.items:
-            if item.get("queue_state") == "processing":
-                item["queue_state"] = "queued"
-                item["recovered_at"] = time.time()
+            if item.get("queue_state") in ("queued", "processing"):
+                item["queue_state"] = "needs_review"
+                item["recovery_note"] = (
+                    "The previous live worker stopped before extraction completed. "
+                    "The rolling-buffer timeline is not restart-persistent; re-detect this moment in a new session."
+                )
                 recovered = True
         if recovered:
             self._save()
@@ -257,7 +260,7 @@ class CandidateQueue:
         raise KeyError(f"Candidate {candidate_id} is not in the queue.")
 
     def pending(self):
-        """Return durable queued work in chronological order for restart recovery."""
+        """Return new work queued by this worker, in chronological order."""
         return [
             dict(item) for item in sorted(self.items, key=_peak)
             if item.get("queue_state") == "queued"
