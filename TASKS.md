@@ -67,7 +67,7 @@ This batch is not marked ready until the local suite and functional checks pass.
 ## M4 — Automated vertical production
 - [x] Automatic crop/layout defaults, hook timeline, configurable subtitles and default vertical export composition.
 - [x] Add a cross-process single-render admission gate with persisted per-clip render state, waiting progress, wall-clock timeout, process-tree cleanup, temporary output promotion and ffprobe validation for 1080x1920 H.264/yuv420p exports.
-- [ ] Add adaptive resource-aware scheduling based on available CPU/RAM and device profile; the current scheduler safely serializes renders but does not dynamically tune concurrency or quality.
+- [x] Add adaptive Remotion browser-tab concurrency and off-thread video-cache sizing based on current free RAM and physical CPU cores; support an explicit concurrency override. Renders remain single-flight across dashboard processes.
 
 ## M5 — Campaign compliance and publishing
 - [ ] Campaign configuration and source authorization.
