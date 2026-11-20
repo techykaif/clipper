@@ -20,7 +20,7 @@ from pathlib import Path
 import psutil
 
 from .common import REMOTION, read_json, tool, write_json
-from . import subs
+from . import services, subs
 
 EDITABLE = ["trimStart", "trimEnd", "hookStart", "hookEnd", "hookEnabled", "layout", "split", "faceRect", "gameRect",
             "subsEnabled", "subColor", "subSize", "subY", "subUpper"]
@@ -600,10 +600,38 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
     _render_state(cd, "queued", attempts=attempts, queued_at=time.time(), error=None,
                   resource_profile=resources,
                   recovered_previous_run=previous.get("state") == "running")
+    process = psutil.Process(os.getpid())
+    service_id = f"render:{jd.name}:{n}:{process.pid}:{time.time_ns()}"
+    service_created = process.create_time()
+    service_recorded = False
     try:
-        with _render_guard(progress):
+        services.register(
+            service_id, "render", jd.name, process.pid, service_created,
+            state="queued", message="Waiting for the renderer", jobs_dir=jd.parent,
+            metadata={"clip_id": int(n), "render_attempt": attempts},
+        )
+        service_recorded = True
+    except Exception:
+        pass
+
+    def report_progress(pct, message):
+        if service_recorded:
+            try:
+                services.heartbeat(service_id, process.pid, service_created, jobs_dir=jd.parent)
+            except Exception:
+                pass
+        progress(pct, message)
+
+    try:
+        with _render_guard(report_progress):
             _render_state(cd, "running", attempts=attempts, started_at=time.time(), error=None,
                           resource_profile=resources)
+            if service_recorded:
+                try:
+                    services.update(service_id, process.pid, service_created, state="rendering",
+                                    message="Remotion rendering", jobs_dir=jd.parent)
+                except Exception:
+                    pass
             cmd = [
                 tool("npx"), "remotion", "render", "src/index.ts", "ClipShort", str(temp_out),
                 f"--props={cd / 'props.json'}", "--codec=h264", "--crf=16",
@@ -613,9 +641,9 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
                 "--timeout=120000", "--log=info",
             ]
             tail = []
-            progress(1, "Starting Remotion renderer")
-            _run_remotion(cmd, progress, tail)
-            progress(99, "Validating vertical export")
+            report_progress(1, "Starting Remotion renderer")
+            _run_remotion(cmd, report_progress, tail)
+            report_progress(99, "Validating vertical export")
             validation = validate_render_output(temp_out, expected_duration, expected_render_fps)
             if p["subsEnabled"] and p["words"]:
                 subs.srt(p["words"], timeline(p), temp_srt)
@@ -627,10 +655,22 @@ def render(jd: Path, n: int, progress=lambda pct, msg: None):
             _render_state(cd, "completed", attempts=attempts, completed_at=time.time(),
                           output=str(out), output_bytes=validation["bytes"], output_info=validation,
                           error=None)
-            progress(100, "Export validated and saved")
+            report_progress(100, "Export validated and saved")
+            if service_recorded:
+                try:
+                    services.finish(service_id, process.pid, service_created, state="completed",
+                                    message="Vertical export validated and saved", jobs_dir=jd.parent)
+                except Exception:
+                    pass
             return out
     except Exception as exc:
         _render_state(cd, "failed", attempts=attempts, failed_at=time.time(), error=str(exc)[-1500:])
+        if service_recorded:
+            try:
+                services.finish(service_id, process.pid, service_created, state="failed",
+                                message=str(exc), jobs_dir=jd.parent)
+            except Exception:
+                pass
         raise
     finally:
         temp_out.unlink(missing_ok=True)
