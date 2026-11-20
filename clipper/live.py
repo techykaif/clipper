@@ -22,7 +22,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import ai_review, candidates, library, rolling_buffer, services, signals, spikes, storage
+from . import ai_review, candidates, library, notifications, rolling_buffer, services, signals, spikes, storage
 from .common import JOBS, fmt_t, read_json, set_status, video_info, write_json
 
 BUFFER_S = 600          # seconds of video kept on disk
@@ -1306,6 +1306,9 @@ def run(key):
                     candidate_queue.mark(c["id"], "failed", error=error)
                     clips.append({**c, "failed": error})
                 _publish(jd, meta, job, msgs, elapsed, clips, chat.error, scan, candidate_queue)
+                if not c.get("failed") and not c.get("rejected"):
+                    notifications.notify("Clipper candidate ready",
+                                          f"{meta.get('title') or jd.name}: clip {c['id']} is ready for review.")
             rec.prune(t0 + elapsed - BUFFER_S)
             n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
             set_status(jd, "live", 0, f"Watching for {fmt_t(elapsed)}. {n} clip{'' if n == 1 else 's'} so far"
@@ -1338,6 +1341,8 @@ def run(key):
             n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
             set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
             _service_update(jd, state="stopped", message=why_stop, terminal=True)
+            if why_stop != "Stopped":
+                notifications.notify("Clipper live session ended", why_stop)
         except Exception as cleanup_exc:
             # Cleanup errors must not strand the single-live-source lock.
             try:
