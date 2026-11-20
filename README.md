@@ -62,6 +62,8 @@ clipper analyze https://www.twitch.tv/videos/…  # a past stream, found by chat
 clipper analyze <link> --by chat,speech --words "no way,clip that" --min-score 80   # chat + what's said, keep 80+
 clipper live https://kick.com/somechannel      # a stream that's live now (Twitch, YouTube or Kick; `clipper stop <job>` to stop)
 clipper resume <job>                           # safely recover an interrupted live session
+clipper cleanup                                # preview old temporary caches and diagnostic logs
+clipper cleanup --apply                        # apply the displayed cleanup plan
 clipper render <job> <clip number>              # render a Short from the terminal
 clipper list                                    # every stream you've clipped
 clipper stt-download                            # add speech-to-text later
@@ -131,6 +133,15 @@ Effects live in `clips/<n>/fx.json` next to the dashboard's `edit.json`; the ful
 | Dashboard (Gradio) | `clipper/app.py` |
 
 Everything Clipper downloads or makes stays in the install folder: `jobs/` for streams and clips, `tmp/` for caches.
+### Budgets, feedback, notifications and cleanup
+
+Antigravity candidate review is capped at 20 attempts per local calendar day and 10 per stream by default. Configure `CLIPPER_AI_REVIEW_DAILY_LIMIT` and `CLIPPER_AI_REVIEW_JOB_LIMIT` before launching Clipper. A review attempt is counted before invocation so failures cannot create an unbounded retry loop.
+
+After opening a clip, label it **Good clip**, **Poor clip** or **Not sure**. Clipper stores only the label, score and minimal candidate identifiers. After at least 20 good/poor labels, Runtime health may show an observed minimum-score suggestion. Clipper never changes the threshold automatically.
+
+Desktop notifications are disabled by default. Set `CLIPPER_DESKTOP_NOTIFICATIONS=1` before launch to enable supported native notifications (macOS via osascript, Linux via notify-send, and Windows when BurntToast is available).
+
+`clipper cleanup` is a dry-run preview for temporary cache files older than 14 days and diagnostic logs older than 30 days. Use `clipper cleanup --apply` only after reviewing the listed paths. This cleanup never removes source clips, finished Shorts, job metadata or rolling-buffer footage.
 
 ## Notes
 
