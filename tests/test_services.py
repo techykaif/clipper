@@ -60,6 +60,23 @@ class RuntimeServiceRegistryTests(unittest.TestCase):
             services.update("live:job-a", self.pid, self.created - 50,
                             state="stopping", jobs_dir=self.root)
 
+    def test_reregister_does_not_overwrite_paused_or_stopping_state(self):
+        self.register(state="paused", now=10.0)
+        paused = services.register(
+            "live:job-a", "live-worker", "job-a", self.pid, self.created,
+            state="starting", jobs_dir=self.root, now=20.0,
+        )
+        self.assertEqual(paused["state"], "paused")
+        stopping = services.update(
+            "live:job-a", self.pid, self.created, state="stopping", jobs_dir=self.root, now=21.0,
+        )
+        self.assertEqual(stopping["state"], "stopping")
+        again = services.register(
+            "live:job-a", "live-worker", "job-a", self.pid, self.created,
+            state="running", jobs_dir=self.root, now=22.0,
+        )
+        self.assertEqual(again["state"], "stopping")
+
     def test_stale_running_service_recovers_after_a_fresh_heartbeat(self):
         self.register(state="running", now=10.0)
         with patch.object(services.psutil, "Process", return_value=ProcessAlive(self.created)):
@@ -143,6 +160,28 @@ class RuntimeServiceRegistryTests(unittest.TestCase):
 
 
 class CrashedLiveWorkerRecoveryTests(unittest.TestCase):
+    def test_recovery_does_not_mark_a_still_running_process_interrupted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "twitch-live-test"
+            jd.mkdir()
+            (jd / "job.json").write_text(json.dumps({"live": True}), encoding="utf-8")
+            (jd / "live.json").write_text(json.dumps({
+                "pid": self_pid := psutil.Process().pid,
+                "create_time": psutil.Process(self_pid).create_time(),
+                "ended": False,
+            }), encoding="utf-8")
+            record = {
+                "id": f"live:{jd.name}", "type": "live-worker", "state": "crashed",
+                "pid": self_pid, "create_time": psutil.Process(self_pid).create_time(),
+                "job_key": jd.name,
+            }
+            with patch.object(live, "JOBS", jobs), \
+                 patch.object(live, "LIVE_LOCK", jobs / ".live-worker.lock"):
+                self.assertFalse(live.recover_crashed_worker(jd, record))
+            state = json.loads((jd / "live.json").read_text(encoding="utf-8"))
+            self.assertFalse(state.get("ended"))
+
     def test_runtime_recovery_preserves_clips_and_moves_unfinished_candidates_to_review(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs = Path(folder)
@@ -194,6 +233,24 @@ class CrashedLiveWorkerRecoveryTests(unittest.TestCase):
 
 
 class CrashedRenderRecoveryTests(unittest.TestCase):
+    def test_recovery_does_not_touch_a_newer_render_attempt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "youtube-video"
+            cd = jd / "clips" / "2"
+            cd.mkdir(parents=True)
+            (cd / "render.json").write_text(json.dumps({"state": "running", "attempts": 4}),
+                                            encoding="utf-8")
+            record = {
+                "type": "render", "state": "crashed", "id": "render-old",
+                "job_key": jd.name, "pid": 777, "create_time": 70.0,
+                "metadata": {"clip_id": 2, "render_attempt": 3},
+            }
+            self.assertFalse(render.recover_crashed_render(record, jobs_dir=jobs))
+            manifest = json.loads((cd / "render.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["state"], "running")
+            self.assertEqual(manifest["attempts"], 4)
+
     def test_interrupted_render_preserves_previous_export_and_removes_temporary_files(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs = Path(folder)
