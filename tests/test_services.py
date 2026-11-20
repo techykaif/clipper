@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import psutil
 
-from clipper import live, runtime, services
+from clipper import live, render, runtime, services
 
 
 class ProcessAlive:
@@ -191,6 +191,79 @@ class CrashedLiveWorkerRecoveryTests(unittest.TestCase):
             self.assertFalse(lock.exists())
             self.assertEqual(data["service_counts"]["crashed"], 1)
             self.assertEqual(second["service_counts"]["crashed"], 1)
+
+
+class CrashedRenderRecoveryTests(unittest.TestCase):
+    def test_interrupted_render_preserves_previous_export_and_removes_temporary_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "youtube-video"
+            cd = jd / "clips" / "2"
+            cd.mkdir(parents=True)
+            final = cd / "final.mp4"
+            final.write_bytes(b"previous-good-export")
+            temp_mp4 = cd / ".final-777-123.rendering.mp4"
+            temp_srt = cd / ".final-777-123.rendering.srt"
+            temp_mp4.write_bytes(b"partial")
+            temp_srt.write_text("partial", encoding="utf-8")
+            (cd / "render.json").write_text(json.dumps({"state": "running", "attempts": 3}),
+                                            encoding="utf-8")
+            service_id = "render:youtube-video:2:777:123"
+            services.register(
+                service_id, "render", jd.name, 777, 70.0, state="running",
+                jobs_dir=jobs, metadata={"clip_id": 2, "render_attempt": 3},
+            )
+            record = services.finish(
+                service_id, 777, 70.0, state="crashed",
+                message="Renderer process exited", jobs_dir=jobs,
+            )
+            recovered = render.recover_crashed_render(record, jobs_dir=jobs)
+            manifest = json.loads((cd / "render.json").read_text(encoding="utf-8"))
+            saved_service = json.loads((jobs / services.REGISTRY_FILE).read_text(encoding="utf-8"))
+
+            self.assertTrue(recovered)
+            self.assertEqual(manifest["state"], "failed")
+            self.assertTrue(manifest["recovered_previous_run"])
+            self.assertEqual(final.read_bytes(), b"previous-good-export")
+            self.assertFalse(temp_mp4.exists())
+            self.assertFalse(temp_srt.exists())
+            self.assertIn("recovered_at", saved_service["services"][service_id])
+
+
+class CrashedAnalysisRecoveryTests(unittest.TestCase):
+    def test_interrupted_analysis_is_marked_for_manual_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "youtube-video"
+            jd.mkdir()
+            service_id = "analysis:youtube-video:777:1001"
+            (jd / "job.json").write_text(json.dumps({
+                "live": False, "runtime_service_id": service_id,
+            }), encoding="utf-8")
+            (jd / "status.json").write_text(json.dumps({
+                "stage": "download", "pct": 54, "msg": "Downloading clip 2",
+            }), encoding="utf-8")
+            (jd / "clips.json").write_text(json.dumps({"clips": [{"id": 1}]}), encoding="utf-8")
+            services.register(
+                service_id, "analysis", jd.name, 777, 70.0,
+                state="running", jobs_dir=jobs,
+            )
+            record = services.finish(
+                service_id, 777, 70.0, state="crashed",
+                message="Application process exited", jobs_dir=jobs,
+            )
+
+            with patch.object(runtime, "JOBS", jobs):
+                recovered = runtime._recover_crashed_analysis(record)
+                status = json.loads((jd / "status.json").read_text(encoding="utf-8"))
+                data = json.loads((jobs / services.REGISTRY_FILE).read_text(encoding="utf-8"))
+
+            self.assertTrue(recovered)
+            self.assertEqual(status["stage"], "error")
+            self.assertEqual(status["pct"], 54)
+            self.assertIn("Run Find clips again", status["error"])
+            self.assertTrue((jd / "clips.json").is_file())
+            self.assertIn("recovered_at", data["services"][service_id])
 
 
 if __name__ == "__main__":
