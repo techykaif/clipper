@@ -459,7 +459,10 @@ class RecorderLifecycleTests(unittest.TestCase):
             (segments / "seg_0.ts").write_bytes(b"segment")
             recorder = live.Recorder.__new__(live.Recorder)
             recorder.dir = segments
-            with patch.object(live.subprocess, "run", side_effect=live.subprocess.TimeoutExpired("ffmpeg", 180)):
+            coverage = {"covered": True, "segments": [{"start": 0.0, "end": 4.0, "path": segments / "seg_0.ts"}]}
+            with patch.object(live.rolling_buffer, "coverage_report", return_value=coverage), \
+                    patch.object(live.rolling_buffer.subprocess, "run",
+                                 side_effect=live.subprocess.TimeoutExpired("ffmpeg", 180)):
                 with self.assertRaisesRegex(RuntimeError, "timed out"):
                     recorder.cut(0, 1, output)
             self.assertFalse((output.parent / "concat.txt").exists())
