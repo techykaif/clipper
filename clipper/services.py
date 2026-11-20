@@ -131,6 +131,7 @@ def register(service_id, service_type, job_key, pid, create_time, state="startin
         payload = _load(path)
         previous = payload["services"].get(service_id, {})
         same_process = _identity_matches(previous, pid, created)
+        effective_state = previous.get("state") if same_process and previous.get("state") in ("paused", "stopping") else state
         record = {
             "id": service_id,
             "type": service_type,
@@ -140,7 +141,7 @@ def register(service_id, service_type, job_key, pid, create_time, state="startin
             "started_at": previous.get("started_at", stamp) if same_process else stamp,
             "heartbeat_at": stamp,
             "updated_at": stamp,
-            "state": state,
+            "state": effective_state,
             "message": str(message or "")[:500],
             "metadata": dict(previous.get("metadata") or {}) if same_process else {},
         }
@@ -178,8 +179,24 @@ def update(service_id, pid, create_time, state=None, message=None, jobs_dir=None
 
 
 def heartbeat(service_id, pid, create_time, jobs_dir=None, now=None):
-    """Persist proof of life without changing a paused/stopping state."""
-    return update(service_id, pid, create_time, jobs_dir=jobs_dir, now=now)
+    """Persist proof of life and clear stale/unverified classifications without unpausing."""
+    stamp = _record_time(now)
+    path, _ = _paths(jobs_dir)
+    with _guard(jobs_dir):
+        payload = _load(path)
+        record = payload["services"].get(str(service_id))
+        if not isinstance(record, dict):
+            raise RuntimeRegistryError(f"Runtime service {service_id!r} is not registered.")
+        if not _identity_matches(record, pid, create_time):
+            raise RuntimeRegistryError(f"Refusing to heartbeat {service_id!r}: process identity changed.")
+        if record.get("state") in TERMINAL_STATES:
+            raise RuntimeRegistryError(f"Runtime service {service_id!r} is already terminal.")
+        if record.get("state") in ("starting", "stale", "unverified"):
+            record["state"] = "running"
+        record["heartbeat_at"] = stamp
+        record["updated_at"] = stamp
+        _save(path, payload)
+        return dict(record)
 
 
 def finish(service_id, pid, create_time, state="stopped", message="", jobs_dir=None, now=None):
