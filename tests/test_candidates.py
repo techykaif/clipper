@@ -155,6 +155,13 @@ class CandidateQueueTests(unittest.TestCase):
             self.assertEqual(reopened.items[0]["queue_state"], "needs_review")
             self.assertEqual(reopened.pending(), [])
 
+    def test_pending_returns_new_queued_candidates_in_time_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            queue = candidates.CandidateQueue(folder)
+            late = queue.discover([self.candidate(300)])[0]
+            early = queue.discover([self.candidate(100)])[0]
+            self.assertEqual([item["id"] for item in queue.pending()], [early["id"], late["id"]])
+
     def test_pending_excludes_ready_and_needs_review_candidates(self):
         with tempfile.TemporaryDirectory() as folder:
             queue = candidates.CandidateQueue(folder)
