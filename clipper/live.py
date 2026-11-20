@@ -795,6 +795,22 @@ def _stop_requested(jd: Path, stop_evt) -> bool:
     return stop_evt.is_set() or (jd / "stop").exists()
 
 
+def _prepare_live_worker(jd: Path, slot_owner, stop_evt) -> bool:
+    """Atomically publish readiness or finalize a stop requested during process launch."""
+    with _slot_guard():
+        info = read_json(jd / "live.json", {}) or {}
+        if _stop_requested(jd, stop_evt):
+            try:
+                write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
+                                              "paused": False, "pause_state": "stopped"})
+                set_status(jd, "done", 100, "Stopped before live capture started")
+            finally:
+                _release_live_slot(slot_owner)
+            return False
+        write_json(jd / "live.json", {**info, "ready": True, "ready_at": time.time()})
+        return True
+
+
 def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
     """Reconnect only after a new segment is observed.
 
@@ -897,18 +913,9 @@ def run(key):
         set_status(jd, "error", 0, "", str(exc))
         raise
 
-    # Coordinate readiness with Stop using the same guard: either Stop wins and capture
-    # never starts, or this worker becomes ready and Stop may safely signal it.
-    with _slot_guard():
-        if _stop_requested(jd, stop_evt):
-            info = read_json(jd / "live.json", {}) or {}
-            write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
-                                          "paused": False, "pause_state": "stopped"})
-            set_status(jd, "done", 100, "Stopped before live capture started")
-            _release_live_slot(slot_owner)
-            return
-        info = read_json(jd / "live.json", {}) or {}
-        write_json(jd / "live.json", {**info, "ready": True, "ready_at": time.time()})
+    # Do not start chat or video capture until an early Stop request has been checked.
+    if not _prepare_live_worker(jd, slot_owner, stop_evt):
+        return
 
     rec = None
     try:
