@@ -309,6 +309,9 @@ def start_process(jd: Path, resume=False):
     """Launch a watcher; recovery mode preserves the original stream clock and saved buffer."""
     import sys
 
+    jd = Path(jd)
+    if not jd.is_dir() or jd.parent.resolve() != Path(JOBS).resolve():
+        raise ValueError("Live jobs must be direct child directories of Clipper's jobs folder.")
     previous = read_json(jd / "live.json", {}) or {}
     job = read_json(jd / "job.json", {}) or {}
     if resume:
