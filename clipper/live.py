@@ -444,6 +444,29 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _terminate_worker_tree(root, timeout=5):
+    """Best-effort tree termination for a verified worker when cooperative resume fails."""
+    processes = []
+    try:
+        processes.extend(reversed(root.children(recursive=True)))
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    processes.append(root)
+    for proc in processes:
+        try:
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    _, alive = psutil.wait_procs(processes, timeout=timeout)
+    for proc in alive:
+        try:
+            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=timeout)
+
+
 def stop(jd: Path):
     resume_error = None
     with _slot_guard():
@@ -459,24 +482,29 @@ def stop(jd: Path):
         if current_info.get("ready") is not True:
             raise RuntimeError("Live worker has not completed startup.")
         root, verified_info = _verified_worker(jd)
-        pid = root.pid
     except Exception:
         # A stale/reused/not-yet-ready PID is never a target for Stop. The marker remains
         # for the child startup handshake to observe before recording begins.
-        root, verified_info, pid = None, {}, None
+        root, verified_info = None, {}
 
-    if pid and os.name != "nt":
+    if root is not None and os.name != "nt":
+        # Use the verified psutil.Process object so psutil can re-check PID identity
+        # immediately before each signal instead of signalling a bare numeric PID.
         try:
-            os.kill(pid, signal.SIGCONT)
-        except OSError:
+            root.send_signal(signal.SIGCONT)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
         try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
+            root.send_signal(signal.SIGTERM)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
+    elif root is not None and resume_error:
+        _terminate_worker_tree(root)
+
     if resume_error:
-        action = ("a termination signal was sent" if pid and os.name != "nt"
-                  else "the stop marker was persisted but no signal could be sent")
+        action = ("the verified worker tree was terminated" if root is not None and os.name == "nt"
+                  else "a termination signal was sent" if root is not None
+                  else "the stop marker was persisted but no verified process signal could be sent")
         raise RuntimeError(
             f"Stop was requested; {action}, but the paused worker tree "
             f"could not be fully resumed: {resume_error}"
@@ -996,36 +1024,47 @@ def run(key):
             set_status(jd, "live", 0, f"Watching for {fmt_t(elapsed)}. {n} clip{'' if n == 1 else 's'} so far"
                                       + (f". {chat.error}" if chat.error else ""))
     finally:
-        stop_evt.set()
-        heartbeat_stop.set()
-        heartbeat_thread.join(timeout=2)
-        if rec is not None:
-            rec.close()
-        if reader.is_alive():
-            reader.join(timeout=15)
-        if reader.is_alive():
-            chat.error = (chat.error + "; " if chat.error else "") + "Chat reader did not stop within 15 seconds."
-        chat.alive = False
-        msgs = chat.snapshot()
-        _publish(jd, meta, job, msgs, time.time() - t0, clips, chat.error, scan)
-        for f in (jd / "buffer").glob("*"):
-            f.unlink(missing_ok=True)
         try:
-            (jd / "buffer").rmdir()
-        except OSError:
-            pass
-        for f in jd.glob("yt_live*"):
-            f.unlink(missing_ok=True)
-        info = read_json(jd / "live.json", {}) or {}
-        try:
+            stop_evt.set()
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=2)
+            if rec is not None:
+                rec.close()
+            if reader.is_alive():
+                reader.join(timeout=15)
+            if reader.is_alive():
+                chat.error = (chat.error + "; " if chat.error else "") + "Chat reader did not stop within 15 seconds."
+            chat.alive = False
+            msgs = chat.snapshot()
+            _publish(jd, meta, job, msgs, time.time() - t0, clips, chat.error, scan)
+            for f in (jd / "buffer").glob("*"):
+                f.unlink(missing_ok=True)
+            try:
+                (jd / "buffer").rmdir()
+            except OSError:
+                pass
+            for f in jd.glob("yt_live*"):
+                f.unlink(missing_ok=True)
+            info = read_json(jd / "live.json", {}) or {}
             write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
                                           "paused": False, "pause_state": "stopped"})
+            n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
+            set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
+        except Exception as cleanup_exc:
+            # Cleanup errors must not strand the single-live-source lock.
+            try:
+                set_status(jd, "error", 0, "", f"Live worker cleanup failed: {cleanup_exc}")
+            except Exception:
+                pass
+            try:
+                info = read_json(jd / "live.json", {}) or {}
+                write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
+                                              "paused": False, "pause_state": "stopped",
+                                              "cleanup_error": str(cleanup_exc)[:1000]})
+            except Exception:
+                pass
         finally:
-            # Never leak the cross-process one-live-source reservation, even if a
-            # media cleanup, dashboard write or status update above failed.
             _release_live_slot(slot_owner)
-        n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
-        set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
 
 
 def _publish(jd, meta, job, msgs, elapsed, clips, note, scan=None):
