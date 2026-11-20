@@ -45,10 +45,17 @@ def clip_choices(key):
 def clip_status(key, c):
     cd = JOBS / key / "clips" / str(c["id"])
     review = read_json(cd / "review.json", {}) or {}
+    render_state = read_json(cd / "render.json", {}) or {}
     if review.get("status") == "reviewed" and review.get("verdict") == "KEEP":
         return "ready", "Approved"
     if review.get("status") == "needs_review" or review.get("verdict") == "REVIEW":
         return "ready", "Needs review"
+    if render_state.get("state") == "queued":
+        return "wait", "Queued for rendering"
+    if render_state.get("state") == "running":
+        return "wait", "Rendering"
+    if render_state.get("state") == "failed" and not (cd / "final.mp4").exists():
+        return "wait", "Render failed"
     if (cd / "final.mp4").exists():
         return "rendered", "Rendered"
     if (cd / "clip.json").exists():
