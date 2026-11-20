@@ -157,11 +157,17 @@ def live(slug, on_message, stop_evt, on_error=lambda e: None):
             with connect(url, additional_headers={"Origin": "https://kick.com", "User-Agent": UA}, open_timeout=20) as ws:
                 ws.send(json.dumps({"id": 1, "connect": {"token": tok, "name": "clipper"}}))
                 ws.send(json.dumps({"id": 2, "subscribe": {"channel": f"chatrooms.{room}.v2"}}))
+                last_activity = time.monotonic()
                 while not stop_evt.is_set():
                     try:
-                        raw = ws.recv(timeout=40)
+                        raw = ws.recv(timeout=5)
                     except TimeoutError:
-                        raise RuntimeError("Kick chat went quiet; reconnecting")
+                        if stop_evt.is_set():
+                            break
+                        if time.monotonic() - last_activity >= 120:
+                            raise RuntimeError("Kick chat connection timed out; reconnecting")
+                        continue
+                    last_activity = time.monotonic()
                     for line in raw.split("\n"):
                         if not line.strip():
                             continue
