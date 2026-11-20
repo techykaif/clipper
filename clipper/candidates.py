@@ -205,8 +205,13 @@ class CandidateQueue:
             if any(int(item.get("id") or 0) == item_id for item in self.items):
                 item_id = self.next_id
             self.next_id = max(self.next_id, item_id + 1)
+            review = clip.get("review") if isinstance(clip.get("review"), dict) else {}
+            review_verdict = review.get("verdict")
+            queue_state = ("needs_review" if review.get("status") == "needs_review" or review_verdict == "REVIEW"
+                           else ("rejected" if review_verdict == "REJECT" else "ready"))
             record.update({
-                "id": item_id, "queue_state": "ready",
+                "id": item_id, "queue_state": queue_state,
+                "review_verdict": review_verdict,
                 "detected_at": time.time(), "updated_at": time.time(),
                 "last_seen_at": time.time(), "observations": 1,
             })
