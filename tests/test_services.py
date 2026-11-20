@@ -120,6 +120,7 @@ class RuntimeServiceRegistryTests(unittest.TestCase):
         with patch.object(services.psutil, "Process", side_effect=psutil.NoSuchProcess(self.pid)):
             data = services.snapshot(jobs_dir=self.root, now=20.0)
         self.assertEqual(data["services"]["live:job-a"]["state"], "stopped")
+        self.assertEqual(data["services"]["live:job-a"]["ended_at"], 20.0)
 
     def test_terminal_service_is_not_reclassified(self):
         self.register(state="running", now=10.0)
@@ -135,6 +136,17 @@ class RuntimeServiceRegistryTests(unittest.TestCase):
         with self.assertRaises(services.RuntimeRegistryError):
             services.snapshot(jobs_dir=self.root)
         self.assertEqual(path.read_text(encoding="utf-8"), "{broken json")
+
+    def test_invalid_registry_record_is_preserved_instead_of_overwritten(self):
+        path = self.root / services.REGISTRY_FILE
+        path.write_text(json.dumps({
+            "version": services.REGISTRY_VERSION,
+            "services": {"broken": "not a service object"},
+        }), encoding="utf-8")
+        original = path.read_text(encoding="utf-8")
+        with self.assertRaisesRegex(services.RuntimeRegistryError, "invalid structure"):
+            services.snapshot(jobs_dir=self.root)
+        self.assertEqual(path.read_text(encoding="utf-8"), original)
 
     def test_concurrent_registrations_do_not_lose_records(self):
         failures = []
