@@ -6,7 +6,7 @@ from pathlib import Path
 
 import psutil
 
-from . import quality_feedback, services, storage
+from . import metrics, quality_feedback, services, storage
 from .common import JOBS, ROOT, read_json, set_status
 
 STALE_AFTER_S = 180
@@ -184,8 +184,10 @@ def snapshot():
         disk_text = "Unavailable"
         disk_warning = f"Disk safety check failed: {exc}"
 
+    production_metrics = metrics.snapshot(jobs_dir=JOBS)
     return {
         "jobs": jobs, "active": active, "stale": stale, "errors": errors,
+        "production_metrics": production_metrics,
         "clips": sum(j["clip_count"] for j in jobs),
         "candidates": sum(j["candidate_count"] for j in jobs),
         "services": service_data.get("services", {}),
@@ -221,6 +223,9 @@ def html_panel():
         ("App + workers memory", data["memory"]),
         ("Disk", data["disk"]),
         ("Clip feedback", quality_feedback.summary_text()),
+        ("Production", f"{data['production_metrics']['rendered']} Shorts rendered · {data['production_metrics']['render_failed']} failed"),
+        ("Review outcomes", f"{data['production_metrics']['review_keep']} kept · {data['production_metrics']['review_reject']} rejected · {data['production_metrics']['review_pending']} pending"),
+        ("Media stored", metrics.human_bytes(data["production_metrics"]["media_bytes"])),
     ]
     stats = "".join(
         f"<div><dt>{html.escape(k)}</dt><dd>{html.escape(v)}</dd></div>" for k, v in cells
