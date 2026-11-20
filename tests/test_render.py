@@ -212,6 +212,7 @@ class RenderQueueTests(unittest.TestCase):
             yield "renderer stopped"
 
         with patch.object(render.subprocess, "Popen", return_value=HungProcess()), \
+             patch.object(render, "chrome_env", return_value={}), \
              patch.object(render, "_lines", side_effect=blocked_lines), \
              patch.object(render, "_stop_render_process", side_effect=lambda _proc: released.set()) as stop, \
              patch.object(render, "RENDER_WALL_TIMEOUT_S", 0.01):
