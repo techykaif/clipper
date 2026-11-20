@@ -540,10 +540,11 @@ def _pause_btn(key):
 
 
 def _resume_btn(key):
-    visible = bool(key and (JOBS / key).exists() and
-                   (read_json(JOBS / key / "job.json", {}) or {}).get("live") and
-                   live.paused(JOBS / key))
-    return gr.update(visible=visible)
+    if not key or not (JOBS / key).exists() or not (read_json(JOBS / key / "job.json", {}) or {}).get("live"):
+        return gr.update(visible=False)
+    paused = live.paused(JOBS / key)
+    recovered = (read_json(JOBS / key / "live.json", {}) or {}).get("recovery_state") == "interrupted" and not live.running(JOBS / key)
+    return gr.update(visible=paused or recovered, value="Resume" if paused else "Recover & resume")
 
 
 def _del_btn(key):
@@ -574,12 +575,17 @@ def pause_live(key):
 
 def resume_live(key):
     if not key or not (JOBS / key).exists():
-        raise gr.Error("Select a paused live stream first.")
+        raise gr.Error("Select an interrupted or paused live stream first.")
     try:
-        live.resume(JOBS / key)
+        if live.paused(JOBS / key):
+            live.resume(JOBS / key)
+        else:
+            runtime.snapshot()
+            live.start_process(JOBS / key, resume=True)
+            gr.Info("Recovering the interrupted session. Only candidate intervals with complete saved footage will be re-extracted.")
     except Exception as exc:
         raise gr.Error(str(exc))
-    return status_html(key), gr.update(visible=True), gr.update(visible=False), sidebar_html(key)
+    return status_html(key), _pause_btn(key), _resume_btn(key), sidebar_html(key)
 
 
 def stop_live(key):
