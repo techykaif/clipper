@@ -39,6 +39,19 @@ class RollingBufferCoverageTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     rolling_buffer.coverage_from_spans([], a, b)
 
+    def test_segment_inventory_only_probes_requested_time_range(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for stamp in (100, 104, 108, 200, 204):
+                (root / f"seg_{stamp}.ts").write_bytes(b"segment")
+            seen = []
+            spans = rolling_buffer.segment_spans(
+                root, duration_reader=lambda path: seen.append(path.name) or 4.0,
+                wall_start=105, wall_end=110,
+            )
+        self.assertEqual(seen, ["seg_104.ts", "seg_108.ts"])
+        self.assertEqual(len(spans), 2)
+
     def test_segment_inventory_ignores_unprobeable_truncated_files(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
