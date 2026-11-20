@@ -167,6 +167,25 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
             self.assertFalse(lock.exists())
             status.assert_called_once()
 
+    def test_stop_before_ready_only_persists_marker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "live-test"
+            jd.mkdir()
+            (jd / "job.json").write_text(json.dumps({"live": True}), encoding="utf-8")
+            with patch.object(live, "JOBS", jobs), patch.object(live, "LIVE_LOCK", jobs / ".live-worker.lock"):
+                child = Mock()
+                child.pid = os.getpid()
+                with patch.object(live.subprocess, "Popen", return_value=child), \
+                     patch.object(live.os, "kill") as kill, patch.object(live, "_verified_worker") as verify:
+                    live.start_process(jd)
+                    live.stop(jd)
+            self.assertTrue((jd / "stop").exists())
+            live_state = json.loads((jd / "live.json").read_text(encoding="utf-8"))
+            self.assertFalse(live_state["ready"])
+            kill.assert_not_called()
+            verify.assert_not_called()
+
     def test_prepare_worker_publishes_ready_when_no_stop_is_pending(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs = Path(folder)
@@ -184,12 +203,33 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
             self.assertTrue(state["ready"])
             self.assertFalse(state.get("ended", False))
 
+    def test_finish_stopped_live_start_releases_slot_without_recording(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = Path(folder)
+            jd = jobs / "live-test"
+            jd.mkdir()
+            (jd / "live.json").write_text(json.dumps({"pid": os.getpid(), "ready": True}), encoding="utf-8")
+            owner = {"pid": os.getpid(), "job": jd.name,
+                     "create_time": psutil.Process(os.getpid()).create_time()}
+            lock = jobs / ".live-worker.lock"
+            lock.write_text(json.dumps(owner), encoding="utf-8")
+            reader = threading.Thread(target=lambda: None)
+            stop_evt = threading.Event()
+            with patch.object(live, "JOBS", jobs), patch.object(live, "LIVE_LOCK", lock), \
+                 patch.object(live, "set_status") as status:
+                live._finish_stopped_live_start(jd, owner, stop_evt, reader)
+            self.assertTrue(stop_evt.is_set())
+            self.assertFalse(lock.exists())
+            state = json.loads((jd / "live.json").read_text(encoding="utf-8"))
+            self.assertTrue(state["ended"])
+            status.assert_called_once()
+
     def test_stop_marker_is_written_even_when_resume_fails(self):
         with tempfile.TemporaryDirectory() as folder:
             jd = Path(folder)
             (jd / "live.json").write_text(json.dumps({
                 "pid": os.getpid(), "create_time": psutil.Process(os.getpid()).create_time(),
-                "paused": True, "pause_state": "paused"
+                "paused": True, "pause_state": "paused", "ready": True
             }), encoding="utf-8")
             verified_root = Mock()
             verified_root.pid = os.getpid()
@@ -208,7 +248,7 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
             (jd / "live.json").write_text(json.dumps({
                 "pid": os.getpid(),
                 "create_time": psutil.Process(os.getpid()).create_time() - 100,
-                "paused": False, "pause_state": "running"
+                "paused": False, "pause_state": "running", "ready": True
             }), encoding="utf-8")
             with patch.object(live, "JOBS", jd.parent), patch.object(live, "LIVE_LOCK", jd.parent / ".lock"), \
                  patch.object(live.os, "kill") as kill:
