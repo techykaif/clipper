@@ -114,6 +114,15 @@ class LiveWorkerSlotTests(unittest.TestCase):
 
 
 class LiveWorkerLifecycleTests(unittest.TestCase):
+    def test_terminate_worker_tree_terminates_children_then_root(self):
+        child, root = Mock(), Mock()
+        root.children.return_value = [child]
+        with patch.object(live.psutil, "wait_procs", return_value=([], [])) as wait:
+            live._terminate_worker_tree(root)
+        child.terminate.assert_called_once()
+        root.terminate.assert_called_once()
+        wait.assert_called_once()
+
     def test_start_process_reserves_slot_before_child_adopts_it(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs = Path(folder)
