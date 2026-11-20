@@ -295,7 +295,8 @@ def start_process(jd: Path):
             except Exception:
                 LIVE_LOCK.unlink(missing_ok=True)
                 raise
-            write_json(jd / "live.json", {**owner, "paused": False, "pause_state": "running"})
+            write_json(jd / "live.json", {**owner, "paused": False, "pause_state": "running",
+                                          "ready": False})
         return int(process.pid)
     except Exception:
         if owner is not None:
@@ -358,14 +359,17 @@ def _pause_locked(jd: Path):
                                   "pause_requested_at": time.time()})
     suspended = []
     try:
-        for child in reversed(root.children(recursive=True)):
+        # Freeze the watcher before enumerating descendants so it cannot spawn a new
+        # recorder/chat process after the snapshot has been taken.
+        root.suspend()
+        suspended.append(root)
+        children = root.children(recursive=True)
+        for child in reversed(children):
             try:
                 child.suspend()
                 suspended.append(child)
             except psutil.NoSuchProcess:
                 continue
-        root.suspend()
-        suspended.append(root)
     except Exception as exc:
         rollback_errors = []
         for proc in reversed(suspended):
@@ -441,21 +445,24 @@ def _alive(pid: int) -> bool:
 
 
 def stop(jd: Path):
-    (jd / "stop").touch()
     resume_error = None
-    try:
-        with _slot_guard():
-            info = read_json(jd / "live.json", {}) or {}
+    with _slot_guard():
+        (jd / "stop").touch()
+        info = read_json(jd / "live.json", {}) or {}
+        try:
             if _pause_state(info) in ("requested", "paused"):
                 _resume_locked(jd)
-    except Exception as exc:
-        resume_error = exc
+        except Exception as exc:
+            resume_error = exc
     try:
+        current_info = read_json(jd / "live.json", {}) or {}
+        if current_info.get("ready") is not True:
+            raise RuntimeError("Live worker has not completed startup.")
         root, verified_info = _verified_worker(jd)
         pid = root.pid
     except Exception:
-        # A stale/reused PID is never a target for Stop. The marker remains for any
-        # worker that is still in its startup path and will observe it before capture.
+        # A stale/reused/not-yet-ready PID is never a target for Stop. The marker remains
+        # for the child startup handshake to observe before recording begins.
         root, verified_info, pid = None, {}, None
 
     if pid and os.name != "nt":
@@ -862,6 +869,19 @@ def run(key):
         set_status(jd, "error", 0, "", str(exc))
         raise
 
+    # Coordinate readiness with Stop using the same guard: either Stop wins and capture
+    # never starts, or this worker becomes ready and Stop may safely signal it.
+    with _slot_guard():
+        if _stop_requested(jd, stop_evt):
+            info = read_json(jd / "live.json", {}) or {}
+            write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
+                                          "paused": False, "pause_state": "stopped"})
+            set_status(jd, "done", 100, "Stopped before live capture started")
+            _release_live_slot(slot_owner)
+            return
+        info = read_json(jd / "live.json", {}) or {}
+        write_json(jd / "live.json", {**info, "ready": True, "ready_at": time.time()})
+
     rec = None
     try:
         reader.start()
@@ -997,10 +1017,15 @@ def run(key):
         for f in jd.glob("yt_live*"):
             f.unlink(missing_ok=True)
         info = read_json(jd / "live.json", {}) or {}
-        write_json(jd / "live.json", {**info, "ended": time.time(), "paused": False, "pause_state": "stopped"})
+        try:
+            write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
+                                          "paused": False, "pause_state": "stopped"})
+        finally:
+            # Never leak the cross-process one-live-source reservation, even if a
+            # media cleanup, dashboard write or status update above failed.
+            _release_live_slot(slot_owner)
         n = len([c for c in clips if not c.get("failed") and not c.get("rejected")])
         set_status(jd, "done", 100, f"{why_stop}. {n} clip{'' if n == 1 else 's'} from {fmt_t(time.time() - t0)} of watching")
-        _release_live_slot(slot_owner)
 
 
 def _publish(jd, meta, job, msgs, elapsed, clips, note, scan=None):
