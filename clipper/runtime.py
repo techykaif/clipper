@@ -47,6 +47,9 @@ def _job_snapshot(jd):
         is_paused = live.paused(jd) if alive else False
     state = classify_job_state(status.get("stage"), is_live, alive, bool(live_info.get("ended")), age, is_paused)
     clips = (read_json(jd / "clips.json", {}) or {}).get("clips", []) or []
+    queue = read_json(jd / "candidates.json", {}) or {}
+    queue_items = queue.get("items", []) if isinstance(queue, dict) else []
+    candidate_count = len(queue_items) if isinstance(queue_items, list) else len(clips)
     meta = read_json(jd / "meta.json", {}) or {}
     title = ((read_json(jd / "clips.json", {}) or {}).get("title")
              or job.get("title") or meta.get("title") or jd.name)
@@ -54,7 +57,7 @@ def _job_snapshot(jd):
         "key": jd.name, "title": str(title), "state": state,
         "stage": str(status.get("stage") or ""), "message": str(status.get("msg") or ""),
         "error": str(status.get("error") or ""), "pid": live_info.get("pid") if is_live else None,
-        "clip_count": len(clips), "is_live": is_live,
+        "clip_count": len(clips), "candidate_count": candidate_count, "is_live": is_live,
     }
 
 
@@ -109,6 +112,7 @@ def snapshot():
     return {
         "jobs": jobs, "active": active, "stale": stale, "errors": errors,
         "clips": sum(j["clip_count"] for j in jobs),
+        "candidates": sum(j["candidate_count"] for j in jobs),
         "cpu": cpu_text, "memory": memory_text, "disk": disk_text,
     }
 
@@ -122,7 +126,7 @@ def html_panel():
     cells = [
         ("Health", health),
         ("Workers", f"{len(active)} active · {len(stale)} stale · {len(errors)} errors"),
-        ("Candidates", str(data["clips"])),
+        ("Candidates", str(data["candidates"])),
         ("CPU", data["cpu"]),
         ("App + workers memory", data["memory"]),
         ("Disk", data["disk"]),
