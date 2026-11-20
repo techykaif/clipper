@@ -79,8 +79,8 @@ class RenderResourceProfileTests(unittest.TestCase):
     def test_low_available_memory_forces_single_render_tab(self):
         memory = Mock()
         memory.available = 1024 ** 3
-        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 8 if logical else 4), \\
-             patch.object(render.psutil, "virtual_memory", return_value=memory), \\
+        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 8 if logical else 4), \
+             patch.object(render.psutil, "virtual_memory", return_value=memory), \
              patch.dict("os.environ", {"CLIPPER_RENDER_CONCURRENCY": ""}):
             profile = render.resource_profile()
         self.assertEqual(profile["concurrency"], 1)
@@ -89,8 +89,8 @@ class RenderResourceProfileTests(unittest.TestCase):
     def test_available_memory_and_physical_cores_allow_limited_parallelism(self):
         memory = Mock()
         memory.available = 8 * 1024 ** 3
-        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 8 if logical else 4), \\
-             patch.object(render.psutil, "virtual_memory", return_value=memory), \\
+        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 8 if logical else 4), \
+             patch.object(render.psutil, "virtual_memory", return_value=memory), \
              patch.dict("os.environ", {"CLIPPER_RENDER_CONCURRENCY": ""}):
             profile = render.resource_profile()
         self.assertEqual(profile["concurrency"], 4)
@@ -98,8 +98,8 @@ class RenderResourceProfileTests(unittest.TestCase):
     def test_concurrency_override_is_capped_by_logical_cpu_count(self):
         memory = Mock()
         memory.available = 16 * 1024 ** 3
-        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 4 if logical else 2), \\
-             patch.object(render.psutil, "virtual_memory", return_value=memory), \\
+        with patch.object(render.psutil, "cpu_count", side_effect=lambda logical=True: 4 if logical else 2), \
+             patch.object(render.psutil, "virtual_memory", return_value=memory), \
              patch.dict("os.environ", {"CLIPPER_RENDER_CONCURRENCY": "3"}):
             profile = render.resource_profile()
         self.assertEqual(profile["concurrency"], 3)
@@ -146,12 +146,12 @@ class RenderQueueTests(unittest.TestCase):
                 def wait(self):
                     return 0
 
-            with patch.object(render, "props_for", return_value=props), \\
-                 patch.object(render, "REMOTION", root / "remotion"), \\
-                 patch.object(render, "_render_guard", return_value=nullcontext()), \\
-                 patch.object(render.subprocess, "Popen", side_effect=FakeProcess), \\
-                 patch.object(render, "tool", return_value="npx"), \\
-                 patch.object(render, "chrome_env", return_value={}), \\
+            with patch.object(render, "props_for", return_value=props), \
+                 patch.object(render, "REMOTION", root / "remotion"), \
+                 patch.object(render, "_render_guard", return_value=nullcontext()), \
+                 patch.object(render.subprocess, "Popen", side_effect=FakeProcess), \
+                 patch.object(render, "tool", return_value="npx"), \
+                 patch.object(render, "chrome_env", return_value={}), \
                  patch.object(render, "validate_render_output", return_value={
                      "width": 1080, "height": 1920, "codec": "h264", "bytes": 2048,
                  }) as validate:
@@ -183,11 +183,11 @@ class RenderQueueTests(unittest.TestCase):
                 def wait(self):
                     return 1
 
-            with patch.object(render, "props_for", return_value=props), \\
-                 patch.object(render, "REMOTION", root / "remotion"), \\
-                 patch.object(render, "_render_guard", return_value=nullcontext()), \\
-                 patch.object(render.subprocess, "Popen", side_effect=FailedProcess), \\
-                 patch.object(render, "tool", return_value="npx"), \\
+            with patch.object(render, "props_for", return_value=props), \
+                 patch.object(render, "REMOTION", root / "remotion"), \
+                 patch.object(render, "_render_guard", return_value=nullcontext()), \
+                 patch.object(render.subprocess, "Popen", side_effect=FailedProcess), \
+                 patch.object(render, "tool", return_value="npx"), \
                  patch.object(render, "chrome_env", return_value={}):
                 with self.assertRaisesRegex(RuntimeError, "Remotion render failed"):
                     render.render(jd, 1)
@@ -211,9 +211,9 @@ class RenderQueueTests(unittest.TestCase):
             released.wait(1)
             yield "renderer stopped"
 
-        with patch.object(render.subprocess, "Popen", return_value=HungProcess()), \\
-             patch.object(render, "_lines", side_effect=blocked_lines), \\
-             patch.object(render, "_stop_render_process", side_effect=lambda _proc: released.set()) as stop, \\
+        with patch.object(render.subprocess, "Popen", return_value=HungProcess()), \
+             patch.object(render, "_lines", side_effect=blocked_lines), \
+             patch.object(render, "_stop_render_process", side_effect=lambda _proc: released.set()) as stop, \
              patch.object(render, "RENDER_WALL_TIMEOUT_S", 0.01):
             with self.assertRaisesRegex(TimeoutError, "exceeded the 0.01-second render limit"):
                 render._run_remotion(["npx", "remotion"], lambda *_: None, [])
