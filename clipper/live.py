@@ -22,7 +22,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import ai_review, candidates, library, services, signals, spikes, storage
+from . import ai_review, candidates, library, rolling_buffer, services, signals, spikes, storage
 from .common import JOBS, fmt_t, read_json, set_status, video_info, write_json
 
 BUFFER_S = 600          # seconds of video kept on disk
@@ -305,9 +305,17 @@ def new_job(target, hours=6.0, top_n=30, basis=("chat",), keywords="", min_score
     return jd
 
 
-def start_process(jd: Path):
-    """Launch the detached watcher and reserve its slot before another launcher can race it."""
+def start_process(jd: Path, resume=False):
+    """Launch a watcher; recovery mode preserves the original stream clock and saved buffer."""
     import sys
+
+    previous = read_json(jd / "live.json", {}) or {}
+    job = read_json(jd / "job.json", {}) or {}
+    if resume:
+        if job.get("live") is not True or previous.get("recovery_state") != "interrupted":
+            raise RuntimeError("Only a recovered, interrupted live job can be resumed.")
+        if not previous.get("t0") or not (jd / "buffer").is_dir():
+            raise RuntimeError("The saved live session clock or rolling buffer is missing; start a new live session instead.")
 
     process = None
     owner = None
@@ -337,8 +345,11 @@ def start_process(jd: Path):
             except Exception:
                 LIVE_LOCK.unlink(missing_ok=True)
                 raise
-            write_json(jd / "live.json", {**owner, "paused": False, "pause_state": "running",
-                                          "ready": False})
+            launch_state = {**previous, **owner, "paused": False, "pause_state": "running",
+                            "ready": False, "ended": None}
+            if resume:
+                launch_state.update({"recovery_state": "resuming", "resume_requested_at": time.time()})
+            write_json(jd / "live.json", launch_state)
             _register_service(jd, owner, state="starting")
         return int(process.pid)
     except Exception:
@@ -897,30 +908,8 @@ class Recorder:
                 f.unlink(missing_ok=True)
 
     def cut(self, wall_a, wall_b, dest: Path):
-        """Concatenate the segments covering [wall_a, wall_b] and trim to exactly that range (re-encoded, high quality)."""
-        segs = self.segments()
-        use = []
-        for i, (w, f) in enumerate(segs):
-            end = segs[i + 1][0] if i + 1 < len(segs) else time.time()
-            if end > wall_a and w < wall_b:
-                use.append((w, f))
-        if not use:
-            raise RuntimeError("That moment is no longer in the recording buffer.")
-        lst = dest.parent / "concat.txt"
-        lst.write_text("".join(f"file '{f.resolve()}'\n" for _, f in use))
-        off = max(0.0, wall_a - use[0][0])
-        try:
-            p = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                                "-ss", f"{off:.2f}", "-t", f"{wall_b - wall_a:.2f}",
-                                "-c:v", "libx264", "-crf", "14", "-preset", "medium", "-c:a", "aac", "-b:a", "320k",
-                                "-movflags", "+faststart", str(dest)], capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("ffmpeg timed out while cutting the clip (180-second limit).") from exc
-        finally:
-            lst.unlink(missing_ok=True)
-        if p.returncode != 0 or not dest.exists():
-            raise RuntimeError("ffmpeg couldn't cut the clip: " + p.stderr.strip()[-300:])
-        return dest
+        """Extract a complete wall-clock interval, refusing to bridge missing capture time."""
+        return rolling_buffer.cut(self.dir, wall_a, wall_b, dest, timeout=180)
 
     def close(self):
         # Stop FFmpeg first so the pipe closes before yt-dlp is asked to exit.
@@ -1068,12 +1057,27 @@ def run(key):
     job = read_json(jd / "job.json")
     meta = read_json(jd / "meta.json", {}) or {}
     previous = read_json(jd / "clips.json", {}) or {}
+    prior_live = read_json(jd / "live.json", {}) or {}
+    resuming = prior_live.get("recovery_state") == "resuming"
+    try:
+        saved_t0 = float(prior_live.get("t0"))
+        if not (saved_t0 > 0 and time.time() >= saved_t0):
+            raise ValueError("invalid saved session clock")
+    except (TypeError, ValueError):
+        saved_t0, resuming = time.time(), False
+    if resuming and not (jd / "buffer").is_dir():
+        resuming, saved_t0 = False, time.time()
     clips = list(previous.get("clips", []) or [])
     first_id = max((int(c.get("id") or 0) for c in clips), default=0) + 1
-    t0 = time.time()
+    t0 = saved_t0 if resuming else time.time()
     stop_evt = threading.Event()
     signal.signal(signal.SIGTERM, lambda *a: stop_evt.set())
     chat = Chat(t0)
+    if resuming:
+        saved_messages = read_json(jd / "chat.json", []) or []
+        chat.msgs = [m for m in saved_messages if isinstance(m, dict)
+                     and isinstance(m.get("t"), (int, float)) and float(m["t"]) >= 0
+                     and m.get("text") is not None]
     if job["platform"] == "twitch":
         reader_target, reader_args = twitch_chat, (job["id"], chat, stop_evt)
     elif job["platform"] == "kick":
@@ -1112,7 +1116,10 @@ def run(key):
         info = read_json(jd / "live.json", {}) or {}
         info = {**info, "pid": os.getpid(),
                 "create_time": psutil.Process(os.getpid()).create_time(),
-                "t0": t0, "ready": False, "paused": False, "pause_state": "running"}
+                "t0": t0, "ready": False, "paused": False, "pause_state": "running",
+                "recovery_state": "resumed" if resuming else "",
+                "resume_count": int(info.get("resume_count") or 0) + (1 if resuming else 0),
+                "last_resumed_at": time.time() if resuming else info.get("last_resumed_at")}
         write_json(jd / "live.json", info)
         _register_service(jd, info, state="starting")
     except Exception as exc:
@@ -1166,6 +1173,32 @@ def run(key):
     heartbeat_stop = threading.Event()
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, args=(jd, heartbeat_stop), daemon=True)
     heartbeat_thread.start()
+    if resuming:
+        restored = 0
+        for item in list(candidate_queue.items):
+            note = str(item.get("recovery_note") or "")
+            if item.get("queue_state") != "needs_review" or "previous live worker stopped" not in note.lower():
+                continue
+            clip_dir = jd / "clips" / str(int(item.get("id") or 0))
+            if (clip_dir / "source.mp4").is_file() or (clip_dir / "clip.json").is_file():
+                candidate_queue.mark(item["id"], "needs_review",
+                    recovery_note="An extracted file already exists; it was preserved for manual review rather than overwritten.")
+                continue
+            try:
+                a, b = t0 + float(item["start"]), t0 + float(item["end"])
+                report = rolling_buffer.coverage_report(jd / "buffer", a, b)
+            except Exception as exc:
+                report = {"covered": False, "reason": f"Coverage check failed: {type(exc).__name__}: {exc}"}
+            if report.get("covered"):
+                candidate_queue.mark(item["id"], "queued",
+                    recovery_note="Recovered from the persisted rolling buffer after segment coverage validation.")
+                restored += 1
+            else:
+                candidate_queue.mark(item["id"], "needs_review",
+                    recovery_note="Not auto-extracted because saved footage is incomplete: "
+                                  + str(report.get("reason") or "unknown coverage gap"))
+        if restored:
+            set_status(jd, "live", 0, f"Resumed the saved session clock; {restored} interrupted candidate(s) have complete footage and are being recovered.")
     try:
         while True:
             if (jd / "stop").exists() or stop_evt.wait(CHECK_S):
