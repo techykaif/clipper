@@ -48,7 +48,7 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [x] Add per-live-job Start / Stop / Pause / Resume controls; pause suspends the verified watcher + descendant process tree, and Stop resumes before shutdown.
 - [x] Preserve manual launch; no login auto-start.
 - [x] Enforce a cross-process single-live-source slot with stale lock recovery; the dashboard's render lock continues to serialize analysis/render work.
-- [ ] Add broader persisted runtime service registry and restart-safe queue state.
+- [ ] Add a unified persisted runtime service registry and restart-safe render queue; the live candidate queue is now file-backed, but the rolling video buffer is not restart-persistent.
 
 ## M2 — One-source live reliability
 - [x] Harden partial recorder startup cleanup and bound each FFmpeg clip cut to 180 seconds; mocked regression tests added (execution still requires running the suite).
