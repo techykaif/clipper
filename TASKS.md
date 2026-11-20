@@ -16,12 +16,13 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 ## Current batch — live-worker lifecycle (implementation in progress; verification pending)
 
 - [x] Reserve the single-live slot atomically during detached worker launch and let the child adopt its reservation.
-- [x] Preserve immediate stop requests through worker startup and reconnect attempts.
-- [x] Serialize pause/resume transitions and persist recoverable pause states.
-- [x] Verify PID creation time and command identity before sending Stop signals.
-- [x] Add worker heartbeats and classify an alive-but-hung live process as stale.
-- [x] Surface unexpected chat-reader exits, join reader threads during shutdown, and shorten Kick websocket polling for responsive Stop.
-- [x] Add regression tests for launch reservation, Stop failure/PID reuse, chat-reader exit, file-based stop requests and heartbeat creation.
+- [x] Preserve immediate stop requests through a worker readiness handshake; install signal handling and persist worker identity before capture begins.
+- [x] Serialize pause/resume transitions, freeze the watcher before descending the process tree, and persist recoverable pause states.
+- [x] Verify PID creation time and command identity before Stop; use verified process handles and a process-tree termination fallback after partial resume failure.
+- [x] Add worker heartbeats and classify new live workers with missing/stale heartbeats as stale while retaining legacy job compatibility.
+- [x] Surface unexpected chat-reader exits, join reader threads during shutdown, and make Kick HTTP setup/retry waits stop-aware as well as polling the websocket every five seconds.
+- [x] Release the single-live slot even if final publication or cleanup fails.
+- [x] Add regression tests for launch reservation/readiness, Stop failure/PID reuse, verified tree fallback, chat-reader exit, Kick setup cancellation, file stop requests and heartbeat creation.
 - [ ] Run the complete automated suite on the Mac after pulling this batch.
 - [ ] Validate lifecycle behavior with real authorized livestreams, including interruption and Stop while paused/reconnecting.
 - [ ] Exercise Windows-specific process/locking paths.
