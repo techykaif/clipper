@@ -10,10 +10,10 @@ class BufferCoverageError(RuntimeError):
     """A requested interval is not fully represented by saved media segments."""
 
 
-def probe_duration(path, ffprobe="ffprobe", timeout=12):
+def _probe_duration_cached(path, size, mtime_ns, ffprobe, timeout):
     result = subprocess.run(
         [ffprobe, "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
         capture_output=True, text=True, timeout=timeout,
     )
     if result.returncode != 0:
@@ -27,16 +27,30 @@ def probe_duration(path, ffprobe="ffprobe", timeout=12):
     return duration
 
 
-def segment_spans(buffer_dir, duration_reader=probe_duration):
+from functools import lru_cache
+_probe_duration_cached = lru_cache(maxsize=2048)(_probe_duration_cached)
+
+
+def probe_duration(path, ffprobe="ffprobe", timeout=12):
+    target = Path(path)
+    stat = target.stat()
+    return _probe_duration_cached(str(target), stat.st_size, stat.st_mtime_ns, ffprobe, timeout)
+
+
+def segment_spans(buffer_dir, duration_reader=probe_duration, wall_start=None, wall_end=None):
     """Return probeable seg_<epoch>.ts files as wall-clock intervals."""
     root = Path(buffer_dir)
     spans = []
     if not root.is_dir():
         return spans
+    lower = None if wall_start is None else float(wall_start) - 60.0
+    upper = None if wall_end is None else float(wall_end)
     for path in root.glob("seg_*.ts"):
         try:
             start = int(path.stem[4:])
-            if start < 0 or not path.is_file() or path.stat().st_size <= 0:
+            if start < 0 or (lower is not None and start < lower) or (upper is not None and start > upper):
+                continue
+            if not path.is_file() or path.stat().st_size <= 0:
                 continue
             duration = float(duration_reader(path))
             if not math.isfinite(duration) or duration <= 0 or duration > 60:
@@ -77,7 +91,8 @@ def coverage_from_spans(spans, wall_start, wall_end, max_gap=0.75):
 
 
 def coverage_report(buffer_dir, wall_start, wall_end, duration_reader=probe_duration, max_gap=0.75):
-    spans = segment_spans(buffer_dir, duration_reader=duration_reader)
+    spans = segment_spans(buffer_dir, duration_reader=duration_reader,
+                          wall_start=wall_start, wall_end=wall_end)
     return coverage_from_spans(spans, wall_start, wall_end, max_gap=max_gap)
 
 
