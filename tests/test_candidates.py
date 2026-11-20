@@ -116,6 +116,16 @@ class CandidateQueueTests(unittest.TestCase):
             self.assertEqual(queue.next_id, 10)
             self.assertEqual(queue.discover([self.candidate(100)]), [])
 
+    def test_seed_preserves_existing_ai_review_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            queue = candidates.CandidateQueue(folder)
+            queue.seed([{
+                "id": 7, "start": 10, "end": 50, "peak": 30, "score": 70,
+                "review": {"status": "needs_review", "verdict": "REVIEW"},
+            }])
+            self.assertEqual(queue.items[0]["queue_state"], "needs_review")
+            self.assertEqual(queue.items[0]["review_verdict"], "REVIEW")
+
     def test_queue_rejects_unknown_state(self):
         with tempfile.TemporaryDirectory() as folder:
             queue = candidates.CandidateQueue(folder)
