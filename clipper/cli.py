@@ -12,6 +12,7 @@ clipper meme search <words> [--kind videos|sounds|images]
 clipper meme get <job-key> <clip-n> <meme-id> [--top TEXT] [--bottom TEXT]"""
 import argparse
 import json
+import time
 
 from .common import JOBS, require_home, read_json
 
@@ -91,11 +92,19 @@ def main():
             raise SystemExit("That link isn't live right now. For a past stream use: clipper analyze <url>")
         jd = live.new_job(target, hours=args.hours, basis=args.by.split(","), keywords=args.words,
                           min_score=args.min_score)
-        print(f"Watching {target['channel']} live. Job: {jd.name}. Ctrl+C or `clipper stop {jd.name}` to stop.")
+        pid = live.start_process(jd)
+        print(f"Watching {target['channel']} live (worker PID {pid}). Job: {jd.name}. "
+              f"Ctrl+C or `clipper stop {jd.name}` to stop.")
         try:
-            live.run(jd.name)
+            while live.running(jd):
+                time.sleep(1)
         except KeyboardInterrupt:
-            pass
+            try:
+                live.stop(jd)
+            except Exception as exc:
+                print(f"Stop request: {exc}")
+            while live.running(jd):
+                time.sleep(0.5)
         print(read_json(jd / "status.json", {}).get("msg", ""))
     elif args.cmd == "live-run":
         from . import live
