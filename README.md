@@ -91,6 +91,10 @@ Clipper watches the stream as it happens:
 
 Times count from when Clipper started watching. It stops when you press **Stop watching**, when the stream ends, or after the number of hours set under *More options* (6 by default). For live jobs, use **Pause** and **Resume** to suspend and continue the watcher plus its media/chat subprocesses. **Stop watching** resumes a paused worker before requesting a clean stop.
 
+### Storage safety
+
+Clipper keeps a configurable free-space reserve (2 GiB by default). It checks before live capture, while a live watcher runs, before each VOD clip download and before each Short render. If a live session crosses the reserve, Clipper stops capture cleanly and removes its temporary rolling buffer; already extracted clips are preserved. The Runtime health panel warns when free space is below the reserve or when the volume cannot be inspected. Set `CLIPPER_MIN_FREE_GB=3` before launching Clipper to reserve 3 GiB instead; set it to `0` only to deliberately disable the guard. This does not automatically delete old jobs or finished media.
+
 ### Review and make a Short
 
 When automatic Antigravity review is enabled under **More options**, Clipper reviews each extracted candidate before you decide what to produce:
