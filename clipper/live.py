@@ -811,6 +811,24 @@ def _prepare_live_worker(jd: Path, slot_owner, stop_evt) -> bool:
         return True
 
 
+def _finish_stopped_live_start(jd: Path, slot_owner, stop_evt, reader):
+    """Finish an early stop after readiness without creating a recorder."""
+    stop_evt.set()
+    if reader.is_alive():
+        reader.join(timeout=15)
+    cleanup_error = "Chat reader did not stop within 15 seconds." if reader.is_alive() else ""
+    try:
+        info = read_json(jd / "live.json", {}) or {}
+        write_json(jd / "live.json", {**info, "ended": time.time(), "ready": False,
+                                      "paused": False, "pause_state": "stopped"})
+        if cleanup_error:
+            set_status(jd, "error", 0, "", cleanup_error)
+        else:
+            set_status(jd, "done", 100, "Stopped before video recording started")
+    finally:
+        _release_live_slot(slot_owner)
+
+
 def _reconnect_recorder(job, jd: Path, stop_evt, deadline=None):
     """Reconnect only after a new segment is observed.
 
@@ -931,6 +949,9 @@ def run(key):
     rec = None
     try:
         reader.start()
+        if _stop_requested(jd, stop_evt):
+            _finish_stopped_live_start(jd, slot_owner, stop_evt, reader)
+            return
         rec = Recorder(job["url"], jd / "buffer", jd / "record.log")
     except Exception as exc:
         stop_evt.set()
