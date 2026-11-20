@@ -109,7 +109,7 @@ def calibration(*, jobs_dir=None, min_samples=20, min_above=5, target_precision=
     reject = len(labelled) - keep
     result = {"samples": len(labelled), "keep": keep, "reject": reject,
               "suggested_min_score": None, "precision": None, "ready": False}
-    if len(labelled) < int(min_samples):
+    if len(labelled) < int(min_samples) or keep == 0 or reject == 0:
         return result
     for threshold in range(0, 101):
         above = [x for x in labelled if float(x.get("score", 0)) >= threshold]
