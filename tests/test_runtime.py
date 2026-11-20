@@ -155,14 +155,11 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
             with patch.object(live, "JOBS", jd.parent), patch.object(live, "LIVE_LOCK", jd.parent / ".lock"), \
                  patch.object(live, "_resume_locked", side_effect=RuntimeError("resume denied")), \
                  patch.object(live, "_verified_worker", return_value=(verified_root, {})), \
-                 patch.object(live.os, "kill") as kill:
+                 patch.object(live, "_terminate_worker_tree") as terminate_tree:
                 with self.assertRaisesRegex(RuntimeError, "Stop was requested"):
                     live.stop(jd)
                 self.assertTrue((jd / "stop").exists())
-                kill.assert_has_calls([
-                    call(os.getpid(), live.signal.SIGCONT),
-                    call(os.getpid(), live.signal.SIGTERM),
-                ])
+                terminate_tree.assert_called_once_with(verified_root)
 
     def test_stop_does_not_signal_a_reused_pid(self):
         with tempfile.TemporaryDirectory() as folder:
