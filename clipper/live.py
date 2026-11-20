@@ -913,6 +913,17 @@ def run(key):
         set_status(jd, "error", 0, "", str(exc))
         raise
 
+    try:
+        info = read_json(jd / "live.json", {}) or {}
+        write_json(jd / "live.json", {**info, "pid": os.getpid(),
+                                      "create_time": psutil.Process(os.getpid()).create_time(),
+                                      "t0": t0, "ready": False, "paused": False,
+                                      "pause_state": "running"})
+    except Exception as exc:
+        _release_live_slot(slot_owner)
+        set_status(jd, "error", 0, "", f"Could not persist live worker identity: {exc}")
+        raise
+
     # Do not start chat or video capture until an early Stop request has been checked.
     if not _prepare_live_worker(jd, slot_owner, stop_evt):
         return
@@ -938,8 +949,7 @@ def run(key):
     scan, heard = None, set()
     try:
         (jd / "heartbeat").touch()
-        write_json(jd / "live.json", {**(read_json(jd / "live.json", {}) or {}), "pid": os.getpid(),
-                                      "create_time": psutil.Process(os.getpid()).create_time(), "t0": t0,
+        write_json(jd / "live.json", {**(read_json(jd / "live.json", {}) or {}),
                                       "heartbeat_enabled": True})
     except Exception as exc:
         stop_evt.set()
