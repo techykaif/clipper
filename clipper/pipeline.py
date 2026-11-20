@@ -7,7 +7,7 @@ from pathlib import Path
 
 import psutil
 
-from . import ai_review, candidates, captions, chat, download, face, hotspot, library, render, services, signals, spikes, stt, storage, subs
+from . import ai_review, candidates, captions, chat, download, face, hotspot, library, notifications, render, services, signals, spikes, stt, storage, subs
 from .common import job_dir, read_json, set_status, write_json, fmt_t
 from .platforms import detect
 
@@ -227,6 +227,7 @@ def _run(url, platform, vid, jd: Path, top_n, cookies_browser, chat_file, skip_d
     rejected = n - len(summary.get("clips", [])) if antigravity_review else 0
     kept = len(summary.get("clips", []))
     set_status(jd, "done", 100, f"{kept} clips kept; {rejected} rejected and moved to Trash" if antigravity_review else f"{kept} clips ready")
+    notifications.notify("Clipper analysis complete", f"{kept} clips ready from {summary.get('title') or jd.name}.")
 
 
 def prepare_clip(cd: Path, c, src, info, progress=lambda frac, msg: None, captions_words=None, visual_quality=None):
