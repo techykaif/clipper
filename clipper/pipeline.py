@@ -1,5 +1,6 @@
 """analyze <url>: chat -> spikes -> download only the spike parts -> hook, words, face crop."""
 import os
+import time
 import traceback
 from pathlib import Path
 
@@ -17,7 +18,8 @@ class Stopped(RuntimeError):
 
 
 def _service_id(jd):
-    return f"analysis:{Path(jd).name}"
+    job = read_json(Path(jd) / "job.json", {}) or {}
+    return str(job.get("runtime_service_id") or f"analysis:{Path(jd).name}:{os.getpid()}")
 
 
 def _service_identity():
@@ -39,9 +41,11 @@ def analyze(url, top_n=10, cookies_browser=None, chat_file=None, skip_download=F
     platform, vid = detect(url)
     jd = job_dir(platform, vid)
     basis = [b for b in ("chat", "audio", "speech") if b in (basis or ())] or ["chat"]
+    service_id = f"analysis:{jd.name}:{os.getpid()}:{time.time_ns()}"
     write_json(jd / "job.json", {"url": url, "platform": platform, "id": vid, "cookies_browser": cookies_browser,
                                  "basis": basis, "keywords": keywords, "min_score": min_score,
-                                 "antigravity_review": bool(antigravity_review)})
+                                 "antigravity_review": bool(antigravity_review),
+                                 "runtime_service_id": service_id})
     (jd / "stop").unlink(missing_ok=True)
     service_recorded = False
     try:
