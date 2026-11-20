@@ -110,14 +110,33 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
                 "pid": os.getpid(), "create_time": psutil.Process(os.getpid()).create_time(),
                 "paused": True, "pause_state": "paused"
             }), encoding="utf-8")
+            verified_root = Mock()
+            verified_root.pid = os.getpid()
             with patch.object(live, "JOBS", jd.parent), patch.object(live, "LIVE_LOCK", jd.parent / ".lock"), \
                  patch.object(live, "_resume_locked", side_effect=RuntimeError("resume denied")), \
-                 patch.object(live.os, "killpg") as killpg, patch.object(live.os, "kill") as kill:
+                 patch.object(live, "_verified_worker", return_value=(verified_root, {})), \
+                 patch.object(live.os, "kill") as kill:
                 with self.assertRaisesRegex(RuntimeError, "Stop was requested"):
                     live.stop(jd)
                 self.assertTrue((jd / "stop").exists())
-                killpg.assert_called_once_with(os.getpid(), live.signal.SIGCONT)
-                kill.assert_called_once_with(os.getpid(), live.signal.SIGTERM)
+                kill.assert_has_calls([
+                    unittest.mock.call(os.getpid(), live.signal.SIGCONT),
+                    unittest.mock.call(os.getpid(), live.signal.SIGTERM),
+                ])
+
+    def test_stop_does_not_signal_a_reused_pid(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "live.json").write_text(json.dumps({
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time() - 100,
+                "paused": False, "pause_state": "running"
+            }), encoding="utf-8")
+            with patch.object(live, "JOBS", jd.parent), patch.object(live, "LIVE_LOCK", jd.parent / ".lock"), \
+                 patch.object(live.os, "kill") as kill:
+                live.stop(jd)
+                self.assertTrue((jd / "stop").exists())
+                kill.assert_not_called()
 
     def test_unexpected_chat_reader_exit_marks_reader_unhealthy(self):
         chat = live.Chat(time.time())
