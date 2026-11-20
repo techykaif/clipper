@@ -468,8 +468,10 @@ def stop(jd: Path):
         except OSError:
             pass
     if resume_error:
+        action = ("a termination signal was sent" if pid and os.name != "nt"
+                  else "the stop marker was persisted but no signal could be sent")
         raise RuntimeError(
-            f"Stop was requested and a termination signal was sent, but the paused worker tree "
+            f"Stop was requested; {action}, but the paused worker tree "
             f"could not be fully resumed: {resume_error}"
         ) from resume_error
 
