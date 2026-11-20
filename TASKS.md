@@ -22,7 +22,7 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 - [x] Add worker heartbeats and classify new live workers with missing/stale heartbeats as stale while retaining legacy job compatibility.
 - [x] Surface unexpected chat-reader exits, join reader threads during shutdown, and make Kick HTTP request retries, setup timeouts and websocket polling stop-aware.
 - [x] Release the single-live slot even if publication, cleanup or status writes fail.
-- [x] Add 46 source-level regression test cases across runtime, AI-review and library suites (not yet executed on the target Mac).
+- [x] Add 47 source-level regression test cases across runtime, AI-review and library suites (not yet executed on the target Mac).
 - [ ] Run the complete automated suite on the Mac after pulling this batch.
 - [ ] Validate lifecycle behavior with real authorized livestreams, including interruption and Stop while paused/reconnecting.
 - [ ] Exercise Windows-specific process/locking paths.
