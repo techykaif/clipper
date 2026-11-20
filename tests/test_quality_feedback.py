@@ -44,6 +44,14 @@ class QualityFeedbackTests(unittest.TestCase):
         self.assertGreaterEqual(result["suggested_min_score"], 41)
         self.assertEqual(len(payload["items"]), 20)
 
+    def test_one_sided_feedback_never_suggests_a_threshold(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for cid in range(1, 21):
+                quality_feedback.record("job", {"id": cid, "score": 70 + cid}, "keep", jobs_dir=folder)
+            result = quality_feedback.calibration(jobs_dir=folder)
+        self.assertFalse(result["ready"])
+        self.assertIsNone(result["suggested_min_score"])
+
     def test_unsure_feedback_does_not_enter_calibration(self):
         with tempfile.TemporaryDirectory() as folder:
             quality_feedback.record("job", {"id": 1, "score": 90}, "unsure", jobs_dir=folder)
