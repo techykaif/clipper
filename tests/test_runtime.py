@@ -6,7 +6,7 @@ import threading
 import unittest
 import psutil
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 
 from clipper import live
 from clipper.runtime import classify_job_state
@@ -120,8 +120,8 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
                     live.stop(jd)
                 self.assertTrue((jd / "stop").exists())
                 kill.assert_has_calls([
-                    unittest.mock.call(os.getpid(), live.signal.SIGCONT),
-                    unittest.mock.call(os.getpid(), live.signal.SIGTERM),
+                    call(os.getpid(), live.signal.SIGCONT),
+                    call(os.getpid(), live.signal.SIGTERM),
                 ])
 
     def test_stop_does_not_signal_a_reused_pid(self):
