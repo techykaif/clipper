@@ -114,6 +114,22 @@ class LiveWorkerSlotTests(unittest.TestCase):
 
 
 class LiveWorkerLifecycleTests(unittest.TestCase):
+    def test_worker_command_matches_detached_and_foreground_cli(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "job.json").write_text(json.dumps({
+                "id": "channel123", "url": "https://youtube.com/watch?v=channel123"
+            }), encoding="utf-8")
+            self.assertTrue(live._matches_worker_command(
+                ["/path/clipper", "live", "https://youtube.com/watch?v=channel123"], jd
+            ))
+            self.assertTrue(live._matches_worker_command(
+                ["python", "-m", "clipper", "live-run", jd.name], jd
+            ))
+            self.assertFalse(live._matches_worker_command(
+                ["python", "-c", "unrelated", "channel999"], jd
+            ))
+
     def test_terminate_worker_tree_terminates_children_then_root(self):
         child, root = Mock(), Mock()
         root.children.return_value = [child]
