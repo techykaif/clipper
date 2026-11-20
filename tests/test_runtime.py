@@ -137,6 +137,23 @@ class LiveWorkerLifecycleTests(unittest.TestCase):
         self.assertFalse(chat.alive)
         self.assertIn("provider refused connection", chat.error)
 
+    def test_file_stop_request_is_visible_during_recovery(self):
+        class StopEvent:
+            def is_set(self):
+                return False
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            (jd / "stop").touch()
+            self.assertTrue(live._stop_requested(jd, StopEvent()))
+
+    def test_heartbeat_is_created_on_worker_start(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jd = Path(folder)
+            stop_evt = threading.Event()
+            stop_evt.set()
+            live._heartbeat_loop(jd, stop_evt)
+            self.assertTrue((jd / "heartbeat").is_file())
+
 
 class YouTubeLiveChatReconnectTests(unittest.TestCase):
     def test_chat_reader_restarts_after_an_unexpected_process_exit(self):
