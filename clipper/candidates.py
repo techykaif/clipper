@@ -161,6 +161,16 @@ class CandidateQueue:
         max_id = max((int(item.get("id") or 0) for item in self.items), default=0)
         self.next_id = max(int(payload.get("next_id") or 1) if isinstance(payload, dict) else 1,
                            int(first_id or 1), max_id + 1)
+        # A worker may crash after claiming an item. Re-queue that interrupted work
+        # so the next worker can safely retry it using the same stable candidate ID.
+        recovered = False
+        for item in self.items:
+            if item.get("queue_state") == "processing":
+                item["queue_state"] = "queued"
+                item["recovered_at"] = time.time()
+                recovered = True
+        if recovered:
+            self._save()
 
     def _save(self):
         if len(self.items) > self.max_items:
@@ -245,6 +255,13 @@ class CandidateQueue:
                 self._save()
                 return dict(item)
         raise KeyError(f"Candidate {candidate_id} is not in the queue.")
+
+    def pending(self):
+        """Return durable queued work in chronological order for restart recovery."""
+        return [
+            dict(item) for item in sorted(self.items, key=_peak)
+            if item.get("queue_state") == "queued"
+        ]
 
     def counts(self):
         result = {state: 0 for state in sorted(ACTIVE_STATES | TERMINAL_STATES)}
