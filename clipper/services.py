@@ -70,7 +70,8 @@ def _load(path):
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeRegistryError(f"Runtime registry is unreadable; refusing to overwrite it: {exc}") from exc
     if (not isinstance(payload, dict) or payload.get("version") != REGISTRY_VERSION
-            or not isinstance(payload.get("services"), dict)):
+            or not isinstance(payload.get("services"), dict)
+            or any(not isinstance(record, dict) for record in payload.get("services", {}).values())):
         raise RuntimeRegistryError("Runtime registry has an unsupported or invalid structure; refusing to overwrite it.")
     return payload
 
@@ -172,6 +173,8 @@ def update(service_id, pid, create_time, state=None, message=None, jobs_dir=None
             raise RuntimeRegistryError(f"Runtime service {service_id!r} is already terminal.")
         if state is not None:
             record["state"] = state
+            if state in TERMINAL_STATES:
+                record["ended_at"] = stamp
         if message is not None:
             record["message"] = str(message)[:500]
         record["heartbeat_at"] = stamp
