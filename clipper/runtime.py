@@ -19,7 +19,9 @@ def classify_job_state(stage, is_live, process_alive=False, ended=False, age_s=N
     if paused and process_alive:
         return "PAUSED"
     if is_live:
-        return "RUNNING" if process_alive else "STALE"
+        if not process_alive:
+            return "STALE"
+        return "STALE" if age_s is None or age_s > STALE_AFTER_S else "RUNNING
     if not stage:
         return "UNKNOWN"
     if stage == "queued":
@@ -32,8 +34,10 @@ def _job_snapshot(jd):
     status = read_json(jd / "status.json", {}) or {}
     live_info = read_json(jd / "live.json", {}) or {}
     status_path = jd / "status.json"
-    age = max(0.0, time.time() - status_path.stat().st_mtime) if status_path.exists() else None
     is_live = bool(job.get("live"))
+    heartbeat_path = jd / "heartbeat"
+    freshness_path = heartbeat_path if is_live and heartbeat_path.exists() else status_path
+    age = max(0.0, time.time() - freshness_path.stat().st_mtime) if freshness_path.exists() else None
     alive = False
     is_paused = False
     if is_live:
