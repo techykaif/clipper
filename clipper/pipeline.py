@@ -1,5 +1,6 @@
 """analyze <url>: chat -> spikes -> download only the spike parts -> hook, words, face crop."""
 import os
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -59,6 +60,20 @@ def analyze(url, top_n=10, cookies_browser=None, chat_file=None, skip_download=F
     except Exception:
         # Analysis remains usable even if the optional health ledger is damaged.
         pass
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = None
+    if service_recorded:
+        def keep_analysis_alive():
+            while not heartbeat_stop.wait(15):
+                _service_heartbeat(jd)
+        heartbeat_thread = threading.Thread(
+            target=keep_analysis_alive, name="clipper-analysis-heartbeat", daemon=True,
+        )
+        try:
+            heartbeat_thread.start()
+        except RuntimeError:
+            heartbeat_thread = None
+
     try:
         _run(url, platform, vid, jd, top_n, cookies_browser, chat_file, skip_download, basis, keywords, min_score,
              bool(antigravity_review))
@@ -82,6 +97,10 @@ def analyze(url, top_n=10, cookies_browser=None, chat_file=None, skip_download=F
                                 message="Analysis completed", jobs_dir=jd.parent)
             except Exception:
                 pass
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=2)
     return jd
 
 
