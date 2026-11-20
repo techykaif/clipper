@@ -29,7 +29,7 @@ If the 2026-11-21 deadline conflicts with reliable implementation or acceptance,
 - [x] Add 78 source-level regression test methods across runtime, AI-review, library, candidate and render suites. The user confirmed all 78 passed on the Mac after the render-watchdog test fix.
 - [x] Run the complete 78-test revision on the Mac; the user confirmed it passed.
 - [x] Run the 96-test revision on the Mac; the user confirmed the complete 96-test suite passed.
-- [ ] Run the 103-test suite after the seven new disk-safety tests are pulled; those additions have not yet been executed.
+- [ ] Run the expanded suite after rolling-buffer recovery and storage-policy tests are pulled; the new additions have not yet been executed.
 - [ ] Validate live-worker pause/resume/stop and real authorized-stream recovery behavior.
 - [ ] Validate visual scoring against representative GTA V/VI clips and tune thresholds from observed false positives/negatives.
 - [ ] Exercise Windows-specific process/locking paths.
@@ -79,7 +79,7 @@ This batch is not marked ready until the local suite and functional checks pass.
 - [ ] Manual submission package fallback.
 
 ## M6 — Reliability and analytics
-- [ ] Restart-persistent rolling video buffer and safe media-timeline recovery. The current recovery path intentionally does not re-cut old timestamps after a worker crash.
+- [x] Persist the original live-session wall clock and existing rolling segments across an unexpected worker exit; add an explicit dashboard/CLI recovery action. Requeue an interrupted candidate only after ffprobe confirms full wall-clock coverage, and refuse to bridge missing capture gaps.
 - [ ] Storage retention policy and desktop notifications.
 - [x] Configurable free-space reserve with fail-closed checks before live capture, while a live source is running, before VOD clip downloads and before Short renders; dashboard health surfaces low-space or inspection failures.
 - [ ] Metrics and campaign performance/earnings tracking.
